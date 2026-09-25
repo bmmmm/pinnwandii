@@ -94,9 +94,10 @@ function spans(t, w, h, out) {
  * layout, alpha ignored), w and h at most 255. Each triangle is the best of
  * random candidates, refined by hill climbing; its colour is the one that
  * minimises the squared error over the pixels it covers. Yields to the
- * event loop now and then so the page stays responsive.
+ * event loop now and then so the page stays responsive, and stops there
+ * once `signal` is aborted.
  */
-export async function sketch(rgba, w, h, { shapes = MAX_SHAPES, seed = 1, tries = 300, patience = 200 } = {}) {
+export async function sketch(rgba, w, h, { shapes = MAX_SHAPES, seed = 1, tries = 300, patience = 200, signal } = {}) {
   const rnd = lcg(seed);
   const px = w * h;
   const target = new Float32Array(px * 3);
@@ -181,7 +182,10 @@ export async function sketch(rgba, w, h, { shapes = MAX_SHAPES, seed = 1, tries 
       }
     }
     out.set([...best, ...col], HEAD + SHAPE * s);
-    if (s % 16 === 15) await new Promise((r) => setTimeout(r, 0));
+    if (s % 16 === 15) {
+      await new Promise((r) => setTimeout(r, 0));
+      signal?.throwIfAborted();
+    }
   }
   return out;
 }

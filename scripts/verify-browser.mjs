@@ -85,7 +85,7 @@ async function contrast(page) {
 }
 // Test images drawn in the page: a JPEG scene and a PNG with a transparent background.
 async function makeImages(page) {
-  const [jpg, png] = await page.evaluate(async () => {
+  const [jpg, png, slow] = await page.evaluate(async () => {
     const draw = (w, h, fn, type) => {
       const c = document.createElement('canvas');
       c.width = w; c.height = h;
@@ -105,6 +105,12 @@ async function makeImages(page) {
       draw(400, 400, (g) => {
         g.fillStyle = '#1b2a6b'; g.beginPath(); g.arc(200, 200, 90, 0, 7); g.fill();
       }, 'image/png'),
+      // 27 MP: its slow decode lets a smaller photo picked after it finish first
+      draw(6000, 4500, (g) => {
+        g.fillStyle = '#e8302a'; g.fillRect(0, 0, 3000, 4500);
+        g.fillStyle = '#f5d400'; g.fillRect(3000, 0, 3000, 4500);
+        for (let i = 0; i < 4000; i++) { g.fillStyle = `hsl(${i % 360},70%,50%)`; g.fillRect((i * 97) % 6000, (i * 131) % 4500, 20, 20); }
+      }, 'image/jpeg'),
     ];
   });
   const save = (uri, name) => {
@@ -112,7 +118,7 @@ async function makeImages(page) {
     fs.writeFileSync(f, Buffer.from(uri.slice(uri.indexOf(',') + 1), 'base64'));
     return f;
   };
-  return { jpg: save(jpg, 'scene.jpg'), png: save(png, 'transparent.png') };
+  return { jpg: save(jpg, 'scene.jpg'), png: save(png, 'transparent.png'), slow: save(slow, 'big.jpg') };
 }
 
 const browser = await puppeteer.launch({
@@ -215,6 +221,15 @@ try {
   const pngSent = await decodeContrib(tokenOf(await guest.$eval('#write-link', (e) => e.value)));
   const bg = [...(sketchBytes(pngSent.img) ?? []).slice(2, 5)];
   check('3 transparent PNG: sketch background is light', bg.length === 3 && bg.every((v) => v > 150), `background ${bg}`);
+
+  // a first photo that is slower to read must not override the photo picked after it
+  await photoInput.uploadFile(images.slow);
+  await photoInput.uploadFile(images.jpg);
+  await waitFor(guest, () => document.querySelector('#write-note').textContent.startsWith('Foto übernommen'), null, 20000);
+  await sleep(4000); // time for the big photo's sketch to finish if it is not stopped
+  const lastSent = await decodeContrib(tokenOf(await guest.$eval('#write-link', (e) => e.value)));
+  const lastBg = [...(sketchBytes(lastSent.img) ?? []).slice(2, 5)].join();
+  check('3 photo picked last wins over a slower earlier one', lastBg === [...sketchBytes(sent.img).slice(2, 5)].join(), `background ${lastBg}`);
 
   // ---- P1-3: "Senden" right after typing must ship the current text ---------
   await guest.evaluate(() => { window.__copied = null; });
@@ -459,7 +474,7 @@ try {
   await fullPage.click('#merge-go');
   await waitFor(fullPage, () => document.querySelector('#merge-result').textContent.length > 0);
   const rFull = await text(fullPage, '#merge-result');
-  check('11 full board: merge reports the rest', rFull === '0 übernommen, 0 doppelt, 0 fremde Pinnwand, 0 defekt 1 nicht übernommen: Pinnwand voll (höchstens 500).', rFull);
+  check('11 full board: merge reports the rest', rFull === '0 übernommen, 0 doppelt, 0 fremde Pinnwand, 0 defekt. 1 nicht übernommen: Pinnwand voll (höchstens 500).', rFull);
   await fullPage.goto(`${ORIGIN}/#c=${extra}`, { waitUntil: 'networkidle0' });
   await sleep(200);
   const hintFull = await text(fullPage, '#receive-hint');

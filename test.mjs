@@ -319,3 +319,21 @@ test('18 photo boards, exact limits, and no foreign SVG', async () => {
   const svg = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
   throws(() => validate('contrib', [ID, 'A', 'B', '', svg]), { code: 'invalid' });
 });
+
+test('19 byte counts are wire-only: a backup with a numeric image is no backup', async () => {
+  for (const n of [-5, 5]) {
+    throws(() => validate('board', [ID, 'T', 'p', 1, [['M', 'hi', '', n]]]), { code: 'invalid' }, String(n));
+    throws(() => validate('contrib', [ID, 'M', 'hi', '', n]), { code: 'invalid' }, String(n));
+    ok(validate('contrib', [ID, 'M', 'hi', '', n], { wire: true }));
+  }
+  const target = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [] };
+  deepEqual(await mergeText(target, JSON.stringify([ID, 'x', 'p', 1, [['M', 'hi', '', -5]]])), { added: 0, dupes: 0, foreign: 0, broken: 1, full: 0 });
+  equal(target.contribs.length, 0);
+});
+
+test('20 an aborted sketch stops', async () => {
+  const img = testImage();
+  const ac = new AbortController();
+  ac.abort();
+  await rejects(sketch(img.rgba, img.w, img.h, { shapes: 40, signal: ac.signal }), { name: 'AbortError' });
+});

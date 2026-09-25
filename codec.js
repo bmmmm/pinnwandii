@@ -155,9 +155,13 @@ const isStr = (v, max, min = 1) => typeof v === 'string' && v.length >= min && v
 const dataUriBytes = (b64) =>
   Math.floor((b64.length * 3) / 4) - (b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0);
 
-function checkImg(img) {
+// `wire`: a tuple straight from a token, whose photos are still byte counts
+// into the tail. Everywhere else (storage, backups) a number is invalid: it
+// would pass here and break encoding and rendering later.
+function checkImg(img, wire) {
   if (img === '') return;
   if (typeof img === 'number') {
+    if (!wire) fail('invalid', 'Bild: falscher Typ.');
     if (Number.isInteger(img) && img > 0 && img <= LIMITS.photo) return;
     if (Number.isInteger(img) && img < 0 && -img <= LIMITS.sketch) return;
     fail('invalid', 'Foto zu groß.');
@@ -169,13 +173,13 @@ function checkImg(img) {
   if (sketchBytes(img)) return;
   fail('invalid', 'Bild muss ein https-Link oder ein kleines Foto sein.');
 }
-function checkEntry(t) {
+function checkEntry(t, wire = false) {
   if (!Array.isArray(t) || t.length !== 4) fail('invalid', 'Beitrag: falscher Typ.');
   const [name, text, sticker, img] = t;
   if (!isStr(name, LIMITS.name)) fail('invalid', `Name: 1 bis ${LIMITS.name} Zeichen.`);
   if (!isStr(text, LIMITS.text)) fail('invalid', `Text: 1 bis ${LIMITS.text} Zeichen.`);
   if (typeof sticker !== 'string' || [...sticker].length > LIMITS.sticker) fail('invalid', 'Sticker: zu lang.');
-  checkImg(img);
+  checkImg(img, wire);
   return { name, text, sticker, img };
 }
 function checkHead(t, len) {
@@ -189,19 +193,19 @@ function checkHead(t, len) {
 }
 
 /** Validates a tuple of the given kind and returns it as a plain object. */
-export function validate(kind, t) {
+export function validate(kind, t, { wire = false } = {}) {
   if (kind === 'invite') return checkHead(t, 4);
   if (kind === 'board') {
     const b = checkHead(t, 5);
     if (!Array.isArray(t[4])) fail('invalid', 'Beiträge: falscher Typ.');
     if (t[4].length > LIMITS.contribs) fail('invalid', `Höchstens ${LIMITS.contribs} Beiträge.`);
-    b.contribs = t[4].map(checkEntry);
+    b.contribs = t[4].map((e) => checkEntry(e, wire));
     return b;
   }
   if (kind === 'contrib') {
     if (!Array.isArray(t) || t.length !== 5) fail('invalid', 'Beitrag: falscher Typ.');
     if (typeof t[0] !== 'string' || !ID_RE.test(t[0])) fail('invalid', 'Kennung ungültig.');
-    return { id: t[0], ...checkEntry(t.slice(1)) };
+    return { id: t[0], ...checkEntry(t.slice(1), wire) };
   }
   throw new Error(`unknown kind: ${kind}`);
 }
@@ -282,7 +286,7 @@ export async function encodeContrib(c) {
 }
 export async function decodeContrib(str) {
   const { obj, tail } = await unpack(str);
-  validate('contrib', obj);
+  validate('contrib', obj, { wire: true });
   const [entry] = joinPhotos([obj.slice(1)], tail);
   return validate('contrib', [obj[0], ...entry]);
 }
@@ -295,7 +299,7 @@ export async function encodeBoard(b) {
 }
 export async function decodeBoard(str) {
   const { obj, tail } = await unpack(str);
-  validate('board', obj);
+  validate('board', obj, { wire: true });
   return validate('board', [...obj.slice(0, 4), joinPhotos(obj[4], tail)]);
 }
 

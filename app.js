@@ -449,7 +449,7 @@ async function mergeRun(texts) {
   const saved = store.save(current);
   renderBoard(current, before);
   renderMergeList();
-  $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt${saved ? '' : ' – nicht gespeichert!'}${fullNote(total.full)}`;
+  $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt${saved ? '' : ' – nicht gespeichert!'}${total.full ? '.' + fullNote(total.full) : ''}`;
 }
 async function readFiles(files) {
   try {
@@ -604,11 +604,12 @@ $('#delete-board').onclick = async () => {
 // ---- write (invitation) -----------------------------------------------------
 
 const writeForm = $('#write-form');
-let write = null; // { invite, photo, link, timer, pending, shrinking, error }
+let write = null; // { invite, photo, link, timer, pending, shrinking, abort, error }
 
 function showWrite(invite) {
   current = null;
-  write = { invite, photo: '', link: '', timer: 0, pending: null, shrinking: null, error: '' };
+  write?.abort?.abort(); // a photo of the previous invitation still being sketched
+  write = { invite, photo: '', link: '', timer: 0, pending: null, shrinking: null, abort: null, error: '' };
   applyTheme(invite);
   writeForm.reset();
   $('#sticker-row').replaceChildren(...STICKERS.map((s) => {
@@ -701,6 +702,8 @@ function sent() {
 
 writeForm.addEventListener('input', (e) => {
   if (e.target.name === 'url' && e.target.value) {
+    write.abort?.abort(); // a link replaces a photo still being sketched
+    write.shrinking = null;
     write.photo = '';
     $('#write-note').textContent = '';
   }
@@ -712,12 +715,17 @@ field(writeForm, 'photo').addEventListener('change', async (e) => {
   e.target.value = '';
   if (!file) return;
   $('#write-note').textContent = 'Foto wird umgewandelt …';
-  const shrinking = (write.shrinking = sketchImage(file));
+  write.abort?.abort();
+  const abort = (write.abort = new AbortController());
+  const shrinking = (write.shrinking = sketchImage(file, abort.signal));
   try {
-    write.photo = await shrinking;
+    const photo = await shrinking;
+    if (write.shrinking !== shrinking) return; // superseded: another photo, a link, another invitation
+    write.photo = photo;
     field(writeForm, 'url').value = '';
     $('#write-note').textContent = 'Foto übernommen, als Skizze: So passt dein Gruß in eine Nachricht.';
   } catch (err) {
+    if (write.shrinking !== shrinking) return;
     write.photo = '';
     $('#write-note').textContent = err.message;
   } finally {
@@ -752,7 +760,7 @@ $('#send-file').onclick = async () => {
 // Photo -> sketch (sketch.js): a copy with the long side SIDE is fitted with
 // triangles. The result is ~1 KB instead of a 24 KB JPEG, so the link stays
 // short enough for every messenger.
-async function sketchImage(file) {
+async function sketchImage(file, signal) {
   let bmp;
   try {
     bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
@@ -776,7 +784,7 @@ async function sketchImage(file) {
   } finally {
     bmp.close();
   }
-  return codec.sketchImg(await sketch(rgba, w, h, { shapes: SHAPES }));
+  return codec.sketchImg(await sketch(rgba, w, h, { shapes: SHAPES, signal }));
 }
 
 // ---- go ---------------------------------------------------------------------
