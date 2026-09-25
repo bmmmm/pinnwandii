@@ -9,16 +9,19 @@
 //   invite  = [id, title, preset, hue]
 //   contrib = [id, name, text, sticker, img]
 //   board   = [id, title, preset, hue, [[name, text, sticker, img], …]]
-//   img     = "" | "https://…" | <number n: the next |n| bytes of the tail,
-//             a sketch (sketch.js) if n < 0, a JPEG photo if n > 0>
-// In memory and in storage a sketch is "sketch:<base64>" and a JPEG photo a
-// data URI; imgSrc() turns either into an <img> source. toTuple()/validate()
-// convert between tuples and plain objects. Version 2 added sketches; new
-// tokens are written as 2, version 1 tokens (JPEG photos) are still read.
+//   img     = "" | "https://…" | <number n: the next |n| bytes of the tail>
+//             n > 0: a JPEG photo, stored without its header (jpeg.js) when
+//             this app encoded it; n < 0: a sketch from version 2 (sketch.js)
+// In memory and in storage a photo is a full JPEG data URI and a sketch
+// "sketch:<base64>"; imgSrc() turns either into an <img> source.
+// toTuple()/validate() convert between tuples and plain objects.
+// Versions: 1 JPEG photos, 2 sketches, 3 JPEGs without header. New tokens are
+// written as 3; older ones are still read.
+import { stripJpeg, unstripJpeg } from './jpeg.js';
 import { MAX_BYTES as SKETCH_BYTES, isSketch, sketchSvg } from './sketch.js';
 
-export const VERSION = '2';
-const READABLE = ['1', '2'];
+export const VERSION = '3';
+const READABLE = ['1', '2', '3'];
 export const PRESETS = ['p', 'b', 'd'];
 export const LIMITS = Object.freeze({
   title: 80, name: 60, text: 1000, sticker: 8, url: 500,
@@ -246,7 +249,8 @@ function splitPhotos(entries) {
   const wired = entries.map(([name, text, sticker, img]) => {
     const sketch = img.startsWith(SKETCH);
     if (!sketch && !img.startsWith('data:')) return [name, text, sticker, img];
-    const bytes = fromBase64(img.slice(sketch ? SKETCH.length : img.indexOf(',') + 1));
+    let bytes = fromBase64(img.slice(sketch ? SKETCH.length : img.indexOf(',') + 1));
+    if (!sketch) bytes = stripJpeg(bytes) ?? bytes;
     bins.push(bytes);
     return [name, text, sticker, sketch ? -bytes.length : bytes.length];
   });
@@ -257,9 +261,11 @@ function joinPhotos(entries, tail) {
   const out = entries.map(([name, text, sticker, img]) => {
     if (typeof img !== 'number') return [name, text, sticker, img];
     const n = Math.abs(img);
-    const b64 = toBase64(tail.subarray(off, off + n));
+    let bytes = tail.subarray(off, off + n);
     off += n;
-    return [name, text, sticker, img < 0 ? SKETCH + b64 : 'data:image/jpeg;base64,' + b64];
+    if (img < 0) return [name, text, sticker, SKETCH + toBase64(bytes)];
+    if (bytes[0] === 1) bytes = unstripJpeg(bytes) ?? fail('broken', MESSAGES.broken); // a JPEG starts with 0xFF
+    return [name, text, sticker, 'data:image/jpeg;base64,' + toBase64(bytes)];
   });
   if (off !== tail.length) fail('broken', MESSAGES.broken);
   return out;

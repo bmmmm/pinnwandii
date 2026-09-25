@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // End-to-end check of pinnwandii in headless Chromium: organizer, guest with
-// photo sketch, merge, settings, finished page, viewer, mobile layout.
+// photo, merge, settings, finished page, viewer, mobile layout.
 //
 //   npm i --prefix <dir> puppeteer-core          # once, outside the repo
 //   PUPPETEER_DIR=<dir> node scripts/verify-browser.mjs
@@ -14,8 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { decodeContrib, encodeBoard, encodeContrib, newId, sketchBytes } from '../codec.js';
-import { shapeCount } from '../sketch.js';
+import { decodeContrib, encodeBoard, encodeContrib, newId } from '../codec.js';
 
 const require = createRequire(path.join(process.env.PUPPETEER_DIR ?? process.cwd(), 'x.js'));
 const puppeteer = require('puppeteer-core');
@@ -72,6 +71,26 @@ const visible = (page, sel) => page.$eval(sel, (e) => !e.hidden && getComputedSt
 const cardCount = (page) => page.$$eval('#wall .card', (c) => c.length);
 const waitFor = (page, fn, arg, ms = 5000) => page.waitForFunction(fn, { timeout: ms }, arg);
 const tokenOf = (link) => link.match(/#c=(\S+)/)?.[1];
+const isPhoto = (img) => img.startsWith('data:image/jpeg;base64,');
+const photoBytes = (img) => Buffer.from(img.slice(img.indexOf(',') + 1), 'base64').length;
+// Decodes a photo data URI in the page: pixel at (1, 1), mean colour, and
+// SSIM against `ref` (an image URL) drawn at the same size.
+const inspect = (page, src, ref) => page.evaluate(async (src, ref) => {
+  const { ssim } = await import('/jpeg.js');
+  const load = async (u) => { const i = new Image(); i.src = u; await i.decode(); return i; };
+  const img = await load(src);
+  const px = (i, w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(i, 0, 0, w, h); return g.getImageData(0, 0, w, h).data; };
+  const a = px(img, img.width, img.height);
+  const mean = [0, 1, 2].map((k) => Math.round(a.filter((_, i) => i % 4 === k).reduce((s, v) => s + v, 0) / (a.length / 4)));
+  const out = { w: img.width, h: img.height, corner: [...a.slice((img.width + 1) * 4, (img.width + 1) * 4 + 3)], mean };
+  if (ref) {
+    const r = await load(ref);
+    const b = px(r, img.width, img.height);
+    out.ssim = ssim(a, b, img.width, img.height);
+    out.refMean = [0, 1, 2].map((k) => Math.round(b.filter((_, i) => i % 4 === k).reduce((s, v) => s + v, 0) / (b.length / 4)));
+  }
+  return out;
+}, src, ref);
 async function contrast(page) {
   return page.evaluate(() => {
     const card = document.querySelector('#wall .card');
@@ -147,7 +166,7 @@ try {
   check('1 theme applied', await page.evaluate(() => document.body.dataset.preset === 'b' && document.body.style.getPropertyValue('--hue') === '300' && document.title === 'Alles Gute zum 80., Oma!'));
   await shot(page, '01-board-empty');
 
-  // ---- 2. invite -> guest writes with a photo sketch --------------------------
+  // ---- 2. invite -> guest writes with a photo ---------------------------------
   await page.click('#toolbar [data-act=invite]');
   await waitFor(page, () => document.querySelector('#dlg-share').open);
   const inviteText = await page.$eval('#share-text', (e) => e.value);
@@ -168,13 +187,16 @@ try {
   const t0 = Date.now();
   await photoInput.uploadFile(images.jpg);
   await waitFor(guest, () => document.querySelector('#write-note').textContent.startsWith('Foto übernommen'), null, 20000);
-  const sketchMs = Date.now() - t0;
+  const photoMs = Date.now() - t0;
   await waitFor(guest, () => document.querySelector('#write-link').value.length > 100);
   const guestLink = await guest.$eval('#write-link', (e) => e.value);
   const guestMsg = `Glückwunsch von Anna Müller für „Alles Gute zum 80., Oma!“: ${guestLink}`;
   const sent = await decodeContrib(tokenOf(guestLink));
-  check('2 preview shows the sketch as SVG + sticker', await guest.evaluate(() => !!document.querySelector('#preview .card img[src^="data:image/svg+xml"]') && document.querySelector('#preview .card .sticker')?.textContent === '🎂'));
-  check('2 link carries a sketch, version 2, no query string', !!sketchBytes(sent.img) && guestLink.includes('/#c=2.') && !guestLink.includes('?'), `${shapeCount(sketchBytes(sent.img) ?? new Uint8Array(5))} triangles, ${sketchMs} ms`);
+  await waitFor(guest, () => document.querySelector('#preview .card img')?.complete);
+  check('2 preview shows the photo + sticker', await guest.evaluate(() => document.querySelector('#preview .card img[src^="data:image/jpeg"]')?.naturalWidth > 0 && document.querySelector('#preview .card .sticker')?.textContent === '🎂'));
+  const sentLook = isPhoto(sent.img) ? await inspect(guest, sent.img, `data:image/jpeg;base64,${fs.readFileSync(images.jpg).toString('base64')}`) : {};
+  check('2 link carries the photo, version 3, no query string', isPhoto(sent.img) && guestLink.includes('/#c=3.') && !guestLink.includes('?'), `${sentLook.w}×${sentLook.h} px, ${photoBytes(sent.img)} B as JPEG, ${photoMs} ms`);
+  check('2 photo in the link looks like the original (SSIM, colours)', sentLook.ssim > 0.7 && sentLook.mean.every((v, k) => Math.abs(v - sentLook.refMean[k]) < 12), `ssim ${sentLook.ssim?.toFixed(3)}, mean ${sentLook.mean} vs ${sentLook.refMean}`);
   check(`2 whole message ≤ ${BUDGET} bytes (one Signal message)`, utf8(guestMsg) <= BUDGET, `${utf8(guestMsg)} bytes, size line "${await text(guest, '#size')}"`);
   await shot(guest, '02-write');
   await bcdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: path.join(OUT, 'guest-downloads'), browserContextId: guestCtx.id, eventsEnabled: true });
@@ -182,7 +204,7 @@ try {
   await guest.$eval('#send-file', (b) => b.click());
   const sendFile = path.join(OUT, 'guest-downloads', 'gruss-anna-muller.txt');
   for (let i = 0; i < 50 && !fs.existsSync(sendFile); i++) await sleep(100);
-  check('2 "Als Datei senden": file name without combining marks', fs.existsSync(sendFile) && fs.readFileSync(sendFile, 'utf8').includes('#c=2.'), fs.readdirSync(path.join(OUT, 'guest-downloads')).join(', '));
+  check('2 "Als Datei senden": file name without combining marks', fs.existsSync(sendFile) && fs.readFileSync(sendFile, 'utf8').includes('#c=3.'), fs.readdirSync(path.join(OUT, 'guest-downloads')).join(', '));
 
   // long text: fewer triangles, still one message
   await guest.evaluate(() => { window.__copied = null; navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve(); }; });
@@ -192,10 +214,25 @@ try {
   await waitFor(guest, () => typeof window.__copied === 'string');
   const longMsg = await guest.evaluate(() => window.__copied);
   const longSent = await decodeContrib(tokenOf(longMsg));
-  const nLong = shapeCount(sketchBytes(longSent.img) ?? new Uint8Array(5));
-  check(`2 1000-char text + photo: message ≤ ${BUDGET} bytes, sketch trimmed but kept`, utf8(longMsg) <= BUDGET && longSent.text === longText && nLong > 20 && nLong < shapeCount(sketchBytes(sent.img)), `${utf8(longMsg)} bytes, ${nLong} triangles`);
+  check(`2 1000-char text + photo: message ≤ ${BUDGET} bytes, photo kept, not larger`, utf8(longMsg) <= BUDGET && longSent.text === longText && isPhoto(longSent.img) && photoBytes(longSent.img) <= photoBytes(sent.img), `${utf8(longMsg)} bytes, photo ${photoBytes(longSent.img)} B`);
   const previewSrc = await guest.$eval('#preview .card img', (e) => e.src);
-  check('2 preview shows the trimmed sketch that is sent', previewSrc === `data:image/svg+xml;base64,${Buffer.from((await import('../sketch.js')).sketchSvg(sketchBytes(longSent.img))).toString('base64')}`);
+  check('2 preview shows the photo version that is sent', previewSrc === longSent.img);
+  // a greeting that leaves no room at all: the photo is left out, visibly
+  let cjkSeed = 11;
+  const cjk = Array.from({ length: 1000 }, () => String.fromCharCode(0x4e00 + ((cjkSeed = (cjkSeed * 1664525 + 1013904223) >>> 0) % 0x5000))).join('');
+  const sendText = async (t) => {
+    await setValue(guest, '#write-form textarea[name=text]', t);
+    await guest.evaluate(() => { window.__copied = null; });
+    await guest.$eval('#copy-link', (b) => b.click());
+    await waitFor(guest, () => typeof window.__copied === 'string');
+    const msg = await guest.evaluate(() => window.__copied);
+    return { msg, c: await decodeContrib(tokenOf(msg)), size: await text(guest, '#size') };
+  };
+  let mid, n = 500; // grow the text until no photo version fits any more
+  do mid = await sendText(cjk.slice(0, (n += 10))); while (mid.c.img !== '' && n < 1000);
+  check('2 no room for the photo: sent without it, and the page says so', mid.c.img === '' && utf8(mid.msg) <= BUDGET && mid.size.includes('ohne Foto'), `${n} chars, ${utf8(mid.msg)} bytes; ${mid.size}`);
+  const long = await sendText(cjk); // 3000 bytes that do not compress
+  check('2 text alone too long for Signal: the page says so', long.c.img === '' && utf8(long.msg) > BUDGET && long.size.includes('zu lang für eine Signal-Nachricht'), long.size);
   await setValue(guest, '#write-form textarea[name=text]', 'Liebe Oma, alles Gute! 🎉\nWir feiern bald zusammen.');
 
   // ---- 3. copy link -> organizer receives -------------------------------------
@@ -209,27 +246,26 @@ try {
   await page.goto(copiedLink, { waitUntil: 'networkidle0' });
   await waitFor(page, (id) => location.hash === `#o=${id}`, boardId);
   await sleep(300);
-  check('3 contribution merged, card with sketch', (await cardCount(page)) === 1 && await page.evaluate(() => !!document.querySelector('#wall .card img[src^="data:image/svg+xml"]')));
+  check('3 contribution merged, card with photo', (await cardCount(page)) === 1 && await page.evaluate(() => !!document.querySelector('#wall .card img[src^="data:image/jpeg"]')));
   check('3 toast shown', await page.evaluate(() => document.querySelector('#toast').textContent.includes('übernommen (1)')), await text(page, '#toast'));
   await shot(page, '03-received');
 
-  // transparent PNG: the sketch background is light, not black
+  // transparent PNG: transparent areas turn white, not black
   await guest.bringToFront();
   await photoInput.uploadFile(images.png);
   await waitFor(guest, () => document.querySelector('#write-note').textContent.startsWith('Foto übernommen'), null, 20000);
   await waitFor(guest, () => document.querySelector('#write-link').value.length > 100);
   const pngSent = await decodeContrib(tokenOf(await guest.$eval('#write-link', (e) => e.value)));
-  const bg = [...(sketchBytes(pngSent.img) ?? []).slice(2, 5)];
-  check('3 transparent PNG: sketch background is light', bg.length === 3 && bg.every((v) => v > 150), `background ${bg}`);
+  const bg = isPhoto(pngSent.img) ? (await inspect(guest, pngSent.img)).corner : [];
+  check('3 transparent PNG: transparent areas are light', bg.length === 3 && bg.every((v) => v > 200), `corner ${bg}`);
 
   // a first photo that is slower to read must not override the photo picked after it
   await photoInput.uploadFile(images.slow);
   await photoInput.uploadFile(images.jpg);
   await waitFor(guest, () => document.querySelector('#write-note').textContent.startsWith('Foto übernommen'), null, 20000);
-  await sleep(4000); // time for the big photo's sketch to finish if it is not stopped
+  await sleep(4000); // time for the big photo to finish if it is not stopped
   const lastSent = await decodeContrib(tokenOf(await guest.$eval('#write-link', (e) => e.value)));
-  const lastBg = [...(sketchBytes(lastSent.img) ?? []).slice(2, 5)].join();
-  check('3 photo picked last wins over a slower earlier one', lastBg === [...sketchBytes(sent.img).slice(2, 5)].join(), `background ${lastBg}`);
+  check('3 photo picked last wins over a slower earlier one', lastSent.img === sent.img, `mean ${isPhoto(lastSent.img) ? (await inspect(guest, lastSent.img)).mean : 'no photo'}`);
 
   // ---- P1-3: "Senden" right after typing must ship the current text ---------
   await guest.evaluate(() => { window.__copied = null; });
@@ -319,7 +355,7 @@ try {
   await page.click('#admin-link');
   await waitFor(page, () => document.querySelector('#dlg-share').open);
   const adminLink = await page.$eval('#share-text', (e) => e.value);
-  check('5 admin link offered', adminLink.startsWith(`${ORIGIN}/#b=2.`) && adminLink.length < 32000, `${adminLink.length} chars`);
+  check('5 admin link offered', adminLink.startsWith(`${ORIGIN}/#b=3.`) && adminLink.length < 32000, `${adminLink.length} chars`);
   await page.click('#dlg-share [data-close]');
   const dev2Ctx = await browser.createBrowserContext();
   const dev2 = await newPage(dev2Ctx, 'dev2');
@@ -351,14 +387,14 @@ try {
   await preview.waitForSelector('.card');
   const pv = await preview.evaluate(() => ({
     cards: document.querySelectorAll('.card').length,
-    sketch: !!document.querySelector('.card img[src^="data:image/svg+xml"]'),
-    sketchDrawn: document.querySelector('.card img[src^="data:image/svg+xml"]')?.naturalWidth > 0,
+    photo: !!document.querySelector('.card img[src^="data:image/jpeg"]'),
+    photoDrawn: document.querySelector('.card img[src^="data:image/jpeg"]')?.naturalWidth > 0,
     scripts: document.querySelectorAll('script').length,
     preset: document.body.dataset.preset, hue: document.body.style.getPropertyValue('--hue'),
     styled: getComputedStyle(document.querySelector('.card')).borderRadius !== '0px',
     blob: location.protocol === 'blob:',
   }));
-  check('6 preview tab: 4 cards, sketch drawn, no script, themed, styled', pv.cards === 4 && pv.sketch && pv.sketchDrawn && pv.scripts === 0 && pv.preset === 'b' && pv.hue === '40' && pv.styled && pv.blob, JSON.stringify(pv));
+  check('6 preview tab: 4 cards, photo drawn, no script, themed, styled', pv.cards === 4 && pv.photo && pv.photoDrawn && pv.scripts === 0 && pv.preset === 'b' && pv.hue === '40' && pv.styled && pv.blob, JSON.stringify(pv));
   await shot(preview, '06-preview');
   await preview.close();
   await page.bringToFront();
@@ -371,7 +407,7 @@ try {
   const filePage = await org.newPage();
   await filePage.goto(`file://${htmlPath}`, { waitUntil: 'load' });
   await waitFor(filePage, () => document.querySelector('.card img')?.complete).catch(() => {}); // lazy image
-  check('6 file:// renders 4 cards with the sketch', await filePage.evaluate(() => document.querySelectorAll('.card').length === 4 && document.querySelector('.card img[src^="data:image/svg+xml"]')?.naturalWidth > 0 && getComputedStyle(document.querySelector('.card')).borderRadius !== '0px'));
+  check('6 file:// renders 4 cards with the photo', await filePage.evaluate(() => document.querySelectorAll('.card').length === 4 && document.querySelector('.card img[src^="data:image/jpeg"]')?.naturalWidth > 0 && getComputedStyle(document.querySelector('.card')).borderRadius !== '0px'));
   await shot(filePage, '06-file');
   await filePage.close();
   await page.bringToFront();

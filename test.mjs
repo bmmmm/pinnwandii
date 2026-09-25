@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Run: node --test test.mjs
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { deepEqual, equal, ok, rejects, throws } from 'node:assert/strict';
 import {
@@ -7,7 +8,8 @@ import {
   encodeContrib, encodeInvite, extractContribs, fromBase64, fromBase64url, imgSrc,
   mergeBoard, mergeContribs, mergeText, pack, sketchImg, toBase64, toBase64url, toTuple, unpack, validate,
 } from './codec.js';
-import { MAX_SHAPES, isSketch, shapeCount, sketch, sketchSvg, trimSketch } from './sketch.js';
+import { MAX_SHAPES, isSketch, sketchSvg } from './sketch.js';
+import { encodeJpeg, jpegHeader, ssim, strippedLength, stripJpeg, unstripJpeg } from './jpeg.js';
 
 const ID = 'AbC-_9';
 const board = {
@@ -35,7 +37,7 @@ const photo = (bytes) => 'data:image/jpeg;base64,' + toBase64(bytes);
 
 test('1 board round-trip keeps umlauts, emoji, newlines and RTL text', async () => {
   const tok = await encodeBoard(board);
-  ok(tok.startsWith('2.'));
+  ok(tok.startsWith('3.'));
   deepEqual(await decodeBoard(tok), board);
 });
 
@@ -182,46 +184,16 @@ function testImage() {
   }
   return { rgba, w, h };
 }
-// Paints a sketch the way the SVG does (pixel centres, alpha 0.5, no blur)
-// and returns the mean absolute error against the image.
-function sketchError(bytes, { rgba, w, h }) {
-  const cur = [];
-  for (let i = 0; i < w * h; i++) cur.push([bytes[2], bytes[3], bytes[4]]);
-  const side = (ax, ay, bx, by, px, py) => (bx - ax) * (py - ay) - (by - ay) * (px - ax);
-  for (let o = 5; o < bytes.length; o += 9) {
-    const [x1, y1, x2, y2, x3, y3, r, g, b] = bytes.subarray(o, o + 9);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const d = [side(x1, y1, x2, y2, x + 0.5, y + 0.5), side(x2, y2, x3, y3, x + 0.5, y + 0.5), side(x3, y3, x1, y1, x + 0.5, y + 0.5)];
-        if (!(d.every((v) => v >= 0) || d.every((v) => v <= 0))) continue;
-        const c = cur[y * w + x];
-        [r, g, b].forEach((v, k) => { c[k] += 0.5 * (v - c[k]); });
-      }
-    }
-  }
-  let err = 0;
-  cur.forEach((c, i) => c.forEach((v, k) => { err += Math.abs(v - rgba[i * 4 + k]); }));
-  return err / (w * h * 3);
+// A valid sketch (version 2 format) of n triangles on a 32 × 24 grid.
+function fakeSketch(n, seed = 3) {
+  const next = lcg(seed);
+  const out = [32, 24, 120, 130, 140];
+  for (let i = 0; i < n; i++) out.push(next() % 33, next() % 25, next() % 33, next() % 25, next() % 33, next() % 25, next() & 255, next() & 255, next() & 255);
+  return Uint8Array.from(out);
 }
 
-test('11 sketch fit: error falls well below the flat background, deterministic, prefixes valid', async () => {
-  const img = testImage();
-  const bytes = await sketch(img.rgba, img.w, img.h, { shapes: 40 });
-  equal(bytes.length, 5 + 9 * 40);
-  ok(isSketch(bytes));
-  const flat = sketchError(trimSketch(bytes, 0), img);
-  const fitted = sketchError(bytes, img);
-  ok(fitted < flat * 0.4, `error ${fitted.toFixed(1)} vs flat ${flat.toFixed(1)}`);
-  // the best of the random candidates alone, without hill climbing, already helps
-  const rough = sketchError(await sketch(img.rgba, img.w, img.h, { shapes: 40, patience: 0 }), img);
-  ok(rough < flat * 0.8, `random-only error ${rough.toFixed(1)} vs flat ${flat.toFixed(1)}`);
-  deepEqual(await sketch(img.rgba, img.w, img.h, { shapes: 40 }), bytes);
-  ok(isSketch(trimSketch(bytes, 7)) && shapeCount(trimSketch(bytes, 7)) === 7);
-});
-
-test('12 sketches ride in the tail, stay small, and render as SVG from numbers only', async () => {
-  const img = testImage();
-  const bytes = await sketch(img.rgba, img.w, img.h, { shapes: 120 });
+test('12 version 2 sketches still ride in the tail and render as SVG from numbers only', async () => {
+  const bytes = fakeSketch(120);
   const c = { ...contrib, text: 'x'.repeat(280), img: sketchImg(bytes) };
   const tok = await encodeContrib(c);
   deepEqual(await decodeContrib(tok), c);
@@ -259,11 +231,13 @@ test('13 malformed sketches are rejected', () => {
   throws(() => validate('contrib', [ID, 'A', 'B', '', -(LIMITS.sketch + 1)]), { code: 'invalid' });
 });
 
-test('14 version 1 tokens (JPEG photos) are still read', async () => {
+test('14 version 1 and 2 tokens are still read', async () => {
   const c = { ...contrib, img: photo(randomBytes(2000, 5)) };
   const tok = await encodeContrib(c);
   deepEqual(await decodeContrib('1.' + tok.slice(2)), c);
-  await rejects(decodeContrib('3.' + tok.slice(2)), { code: 'version' });
+  const sk = { ...contrib, img: sketchImg(fakeSketch(4)) };
+  deepEqual(await decodeContrib('2.' + (await encodeContrib(sk)).slice(2)), sk);
+  await rejects(decodeContrib('4.' + tok.slice(2)), { code: 'version' });
   deepEqual(extractContribs(`https://x.test/#c=1.${tok.slice(2)}`), ['1.' + tok.slice(2)]);
 });
 
@@ -302,8 +276,7 @@ test('17 a full board counts the rest instead of throwing', async () => {
 });
 
 test('18 photo boards, exact limits, and no foreign SVG', async () => {
-  const img = testImage();
-  const sk = sketchImg(await sketch(img.rgba, img.w, img.h, { shapes: 5 }));
+  const sk = sketchImg(fakeSketch(5));
   const b = { ...board, contribs: [
     { name: 'A', text: 'a', sticker: '', img: photo(randomBytes(3000, 1)) },
     { name: 'B', text: 'b', sticker: '', img: '' },
@@ -331,9 +304,73 @@ test('19 byte counts are wire-only: a backup with a numeric image is no backup',
   equal(target.contribs.length, 0);
 });
 
-test('20 an aborted sketch stops', async () => {
-  const img = testImage();
-  const ac = new AbortController();
-  ac.abort();
-  await rejects(sketch(img.rgba, img.w, img.h, { shapes: 40, signal: ac.signal }), { name: 'AbortError' });
+test('20 own JPEGs travel without header and come back byte for byte', () => {
+  const { rgba } = testImage();
+  for (const [w, h, q] of [[32, 24, 30], [1, 1, 1], [17, 9, 100], [255, 3, 50]]) {
+    const px = new Uint8Array(w * h * 4).map((_, i) => rgba[i % rgba.length]);
+    const jpeg = encodeJpeg(px, w, h, q);
+    deepEqual(jpeg.subarray(0, jpegHeader(w, h, q).length), jpegHeader(w, h, q), `${w}x${h} q${q}`);
+    const small = stripJpeg(jpeg);
+    deepEqual([...small.subarray(0, 4)], [1, q, w, h]);
+    equal(small.length, strippedLength(jpeg));
+    equal(jpeg.length - small.length, 589 - 2, 'the whole header but 4 bytes is saved');
+    deepEqual(unstripJpeg(small), jpeg);
+  }
+  // The header is part of the link format: links saved today must decode
+  // tomorrow, so the tables may never change.
+  const pin = createHash('sha256');
+  for (let q = 1; q <= 100; q++) pin.update(jpegHeader(1, 1, q));
+  equal(pin.digest('hex'), '39e4c47352b85134cac9e07698faa567e07688a3b367a936d4774dcdfb3eec98');
+  throws(() => encodeJpeg(new Uint8Array(4 * 256), 256, 1, 50), RangeError);
+  throws(() => encodeJpeg(new Uint8Array(4), 1, 1, 0), RangeError);
+});
+
+test('21 foreign JPEGs keep their header; malformed stripped bytes are refused', () => {
+  const { rgba, w, h } = testImage();
+  const jpeg = encodeJpeg(rgba, w, h, 40);
+  for (const [label, at] of [['quantisation table', 20], ['Huffman table', 300], ['scan header', 580]]) {
+    const other = jpeg.slice();
+    other[at] ^= 1;
+    equal(stripJpeg(other), null, label);
+  }
+  equal(stripJpeg(jpeg.subarray(0, jpeg.length - 1)), null, 'no end marker');
+  const wide = new Uint8Array([...jpegHeader(300, 10, 40), 1, 2, 3, 0xff, 0xd9]);
+  equal(stripJpeg(wide), null, 'width does not fit in a byte');
+  equal(stripJpeg(randomBytes(900)), null, 'random bytes');
+  const small = stripJpeg(jpeg);
+  for (const [label, patch] of [['type', [0]], ['quality 0', [1, 0]], ['quality 101', [1, 101]], ['width 0', [1, 40, 0]], ['height 0', [1, 40, 32, 0]]]) {
+    const bad = small.slice();
+    bad.set(patch);
+    equal(unstripJpeg(bad), null, label);
+  }
+});
+
+test('22 photos on the wire: own JPEG without header, legacy JPEG as is', async () => {
+  const { rgba, w, h } = testImage();
+  const jpeg = encodeJpeg(rgba, w, h, 30);
+  const c = { ...contrib, text: 'x'.repeat(280), img: 'data:image/jpeg;base64,' + toBase64(jpeg) };
+  const tok = await encodeContrib(c);
+  ok(tok.startsWith('3.'));
+  const { obj, tail } = await unpack(tok);
+  equal(obj[4], strippedLength(jpeg));
+  deepEqual(tail, stripJpeg(jpeg));
+  deepEqual(await decodeContrib(tok), c);
+  const legacy = { ...contrib, img: photo(randomBytes(3000, 8)) };
+  equal((await unpack(await encodeContrib(legacy))).tail.length, 3000);
+  deepEqual(await decodeContrib(await encodeContrib(legacy)), legacy);
+  // a stripped photo with an impossible header field is a broken link
+  const bad = tail.slice();
+  bad[1] = 0;
+  await rejects(decodeContrib(await pack(obj, [bad])), { code: 'broken' });
+});
+
+test('23 ssim: 1 for identical images, lower the more they differ', () => {
+  const { rgba, w, h } = testImage();
+  equal(ssim(rgba, rgba, w, h), 1);
+  const noisy = rgba.map((v, i) => (i % 4 === 3 ? v : Math.max(0, Math.min(255, v + ((i * 37) % 41) - 20))));
+  const inverted = rgba.map((v, i) => (i % 4 === 3 ? v : 255 - v));
+  const sNoisy = ssim(rgba, noisy, w, h);
+  const sInv = ssim(rgba, inverted, w, h);
+  ok(sNoisy < 1 && sNoisy > 0.5, `noisy ${sNoisy}`);
+  ok(sInv < sNoisy && sInv < 0.2, `inverted ${sInv}`);
 });

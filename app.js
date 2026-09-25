@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// pinnwandii app: hash router, views, localStorage store, photo sketching,
+// pinnwandii app: hash router, views, localStorage store, photo pipeline,
 // sharing, merge dialog and the static page builder. All user content is
 // rendered through textContent / createElement, never through innerHTML.
 import * as codec from './codec.js';
-import { SIDE, shapeCount, sketch, trimSketch } from './sketch.js';
+import { MAX_SIDE, encodeJpeg, ssim, strippedLength } from './jpeg.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -21,7 +21,6 @@ const entryKey = (e) => JSON.stringify([e.name, e.text, e.sticker, e.img]);
 // message stays below that, with room for a few words added by hand.
 const MESSAGE_BUDGET = 1900;
 const utf8Length = (s) => new TextEncoder().encode(s).length;
-const SHAPES = 160; // triangles fitted per photo; more never fit the budget
 
 function h(tag, props = {}, ...kids) {
   const e = document.createElement(tag);
@@ -608,7 +607,7 @@ let write = null; // { invite, photo, link, timer, pending, shrinking, abort, er
 
 function showWrite(invite) {
   current = null;
-  write?.abort?.abort(); // a photo of the previous invitation still being sketched
+  write?.abort?.abort(); // a photo of the previous invitation still being prepared
   write = { invite, photo: '', link: '', timer: 0, pending: null, shrinking: null, abort: null, error: '' };
   applyTheme(invite);
   writeForm.reset();
@@ -636,22 +635,36 @@ function currentContrib() {
     name: field(writeForm, 'name').value.trim(),
     text: field(writeForm, 'text').value.trim(),
     sticker: $('#sticker-row [aria-pressed="true"]')?.textContent ?? '',
-    img: write.photo || field(writeForm, 'url').value.trim(),
+    img: write.photo ? write.photo.at(-1).img : field(writeForm, 'url').value.trim(),
   };
 }
 const messageFor = (name, link) => `Glückwunsch von ${name} für „${write.invite.title}“: ${link}`;
-// Encodes the contribution. A sketch drops its last, finest triangles until
-// the whole message fits MESSAGE_BUDGET; 12 link characters per triangle.
+// Encodes the contribution with the best photo version (write.photo, from
+// small to large) for which the whole message still fits MESSAGE_BUDGET. If
+// not even the smallest fits (a very long greeting), the photo is left out;
+// `tooLong` says that even the text alone does not fit.
 async function fittedLink(c) {
-  const bytes = codec.sketchBytes(c.img);
-  let n = bytes ? shapeCount(bytes) : 0;
-  for (;;) {
-    const fitted = bytes ? { ...c, img: codec.sketchImg(trimSketch(bytes, n)) } : c;
-    const link = `${BASE}#c=${await codec.encodeContrib(fitted)}`;
-    const over = utf8Length(messageFor(fitted.name, link)) - MESSAGE_BUDGET;
-    if (over <= 0 || n === 0) return { c: fitted, link };
-    n = Math.max(0, n - Math.ceil(over / 12));
+  const linkOf = async (x) => `${BASE}#c=${await codec.encodeContrib(x)}`;
+  const fits = (x, link) => utf8Length(messageFor(x.name, link)) <= MESSAGE_BUDGET;
+  const ladder = write.photo;
+  if (ladder) {
+    let best = null;
+    for (let lo = 0, hi = ladder.length - 1; lo <= hi;) {
+      const mid = (lo + hi) >> 1;
+      const x = { ...c, img: ladder[mid].img };
+      const link = await linkOf(x);
+      if (fits(x, link)) {
+        best = { c: x, link };
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (best) return best;
   }
+  const x = ladder ? { ...c, img: '' } : c;
+  const link = await linkOf(x);
+  return { c: x, link, dropped: !!ladder, tooLong: !fits(x, link) };
 }
 async function updateWrite() {
   const c = currentContrib();
@@ -665,12 +678,14 @@ async function updateWrite() {
   if (!c.name || !c.text) return;
   const pending = (write.pending = fittedLink(c));
   try {
-    const { c: fitted, link } = await pending;
+    const { c: fitted, link, dropped, tooLong } = await pending;
     if (write.pending !== pending) return; // superseded by newer input
     write.link = link;
-    renderPreview(fitted); // the sketch as sent, possibly with fewer triangles
+    renderPreview(fitted); // the photo as sent
     $('#write-link').value = write.link;
-    $('#size').textContent = `Link: ${KB(write.link.length)}`;
+    const note = tooLong ? ' · zu lang für eine Signal-Nachricht: kürzen oder als Datei senden.'
+      : dropped ? ' · ohne Foto: Mit diesem langen Gruß passt es nicht in eine Nachricht.' : '';
+    $('#size').textContent = `Link: ${KB(write.link.length)}${note}`;
   } catch (e) {
     if (write.pending !== pending) return;
     write.error = e.message;
@@ -702,7 +717,7 @@ function sent() {
 
 writeForm.addEventListener('input', (e) => {
   if (e.target.name === 'url' && e.target.value) {
-    write.abort?.abort(); // a link replaces a photo still being sketched
+    write.abort?.abort(); // a link replaces a photo still being prepared
     write.shrinking = null;
     write.photo = '';
     $('#write-note').textContent = '';
@@ -717,13 +732,13 @@ field(writeForm, 'photo').addEventListener('change', async (e) => {
   $('#write-note').textContent = 'Foto wird umgewandelt …';
   write.abort?.abort();
   const abort = (write.abort = new AbortController());
-  const shrinking = (write.shrinking = sketchImage(file, abort.signal));
+  const shrinking = (write.shrinking = photoLadder(file, abort.signal));
   try {
     const photo = await shrinking;
     if (write.shrinking !== shrinking) return; // superseded: another photo, a link, another invitation
     write.photo = photo;
     field(writeForm, 'url').value = '';
-    $('#write-note').textContent = 'Foto übernommen, als Skizze: So passt dein Gruß in eine Nachricht.';
+    $('#write-note').textContent = 'Foto übernommen, so klein gerechnet, dass dein Gruß in eine Nachricht passt.';
   } catch (err) {
     if (write.shrinking !== shrinking) return;
     write.photo = '';
@@ -757,34 +772,71 @@ $('#send-file').onclick = async () => {
 
 // ---- photo pipeline ---------------------------------------------------------
 
-// Photo -> sketch (sketch.js): a copy with the long side SIDE is fitted with
-// triangles. The result is ~1 KB instead of a 24 KB JPEG, so the link stays
-// short enough for every messenger.
-async function sketchImage(file, signal) {
+// A photo becomes a ladder of small JPEGs (jpeg.js, sent without header):
+// every size and quality below is encoded, scored against a REF-sized copy
+// by SSIM, and only versions that look better than every smaller one are
+// kept. Which rung is sent depends on the room the greeting leaves
+// (fittedLink). Versions too big for any message are not scored. Encoding
+// through a canvas also drops EXIF data such as the location.
+const REF = 240;
+const SIDES = [48, 64, 80, 96, 112, 128, 160, 192, 240];
+const QUALITIES = [10, 15, 20, 30, 40, 55, 70, 85];
+const MAX_PHOTO = Math.floor((MESSAGE_BUDGET * 3) / 4); // bytes, before base64
+
+function drawn(src, w, h) {
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#fff'; // transparent PNG areas become white, not black
+  ctx.fillRect(0, 0, w, h);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, 0, 0, w, h);
+  return ctx.getImageData(0, 0, w, h).data;
+}
+const fit = (w, h, side) => {
+  const s = Math.min(1, side / Math.max(w, h));
+  return [Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s))];
+};
+
+async function photoLadder(file, signal) {
   let bmp;
   try {
     bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
   } catch {
     bmp = await createImageBitmap(file).catch(() => { throw new Error('Das Bild kann nicht gelesen werden.'); });
   }
-  let rgba, w, h;
+  const cands = [];
   try {
-    const s = Math.min(1, SIDE / Math.max(bmp.width, bmp.height));
-    w = Math.max(1, Math.round(bmp.width * s));
-    h = Math.max(1, Math.round(bmp.height * s));
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.fillStyle = '#fff'; // transparent PNG areas become white, not black
-    ctx.fillRect(0, 0, w, h);
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(bmp, 0, 0, w, h);
-    rgba = ctx.getImageData(0, 0, w, h).data;
+    const [rw, rh] = fit(bmp.width, bmp.height, Math.min(REF, MAX_SIDE));
+    const ref = drawn(bmp, rw, rh);
+    let last = 0;
+    for (const side of SIDES) {
+      const [w, h] = fit(bmp.width, bmp.height, side);
+      if (w * 1000 + h === last) break; // the photo is smaller than this side
+      last = w * 1000 + h;
+      const px = drawn(bmp, w, h);
+      if (strippedLength(encodeJpeg(px, w, h, QUALITIES[0])) > MAX_PHOTO) break; // larger sides only grow
+      for (const q of QUALITIES) {
+        const jpeg = encodeJpeg(px, w, h, q);
+        const size = strippedLength(jpeg);
+        if (size > MAX_PHOTO) break; // higher qualities only grow
+        const decoded = await createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' }));
+        const score = ssim(ref, drawn(decoded, rw, rh), rw, rh);
+        decoded.close();
+        cands.push({ w, q, size, score, img: 'data:image/jpeg;base64,' + codec.toBase64(jpeg) });
+      }
+      signal?.throwIfAborted();
+      await new Promise((r) => setTimeout(r, 0));
+    }
   } finally {
     bmp.close();
   }
-  return codec.sketchImg(await sketch(rgba, w, h, { shapes: SHAPES, signal }));
+  cands.sort((a, b) => a.size - b.size);
+  const ladder = [];
+  for (const c of cands) if (!ladder.length || c.score > ladder.at(-1).score) ladder.push(c);
+  if (!ladder.length) throw new Error('Das Bild kann nicht gelesen werden.');
+  return ladder;
 }
 
 // ---- go ---------------------------------------------------------------------
