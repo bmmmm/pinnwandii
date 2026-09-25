@@ -605,16 +605,34 @@ try {
   await cp.$eval('#card-nomedia', (b) => b.click());
   const cleared = await cp.evaluate(() => document.querySelector('#card-media').children.length === 0 && document.querySelector('#card-nomedia').hidden);
   await cp.$eval('#card-save', (b) => b.click());
-  // a photo added in the dialog: saving right away waits for it
+  // a photo added in the dialog: saving right away waits for it, also for one picked while it waits
   await openCard('Ben');
-  await (await cp.$('#card-form input[name=photo]')).uploadFile(images.jpg);
+  const cardPhoto = await cp.$('#card-form input[name=photo]');
+  const notAPhoto = path.join(OUT, 'not-a-photo.jpg');
+  fs.writeFileSync(notAPhoto, 'this is text');
+  await cp.evaluate(() => { document.querySelector('#toast').textContent = ''; });
+  await cardPhoto.uploadFile(notAPhoto);
   await cp.$eval('#card-save', (b) => b.click());
-  await waitFor(cp, () => !document.querySelector('#dlg-card').open, null, 20000).catch(() => cp.$eval('#dlg-card [data-close]', (b) => b.click()));
+  await waitFor(cp, () => document.querySelector('#toast').textContent.length > 0).catch(() => {});
+  const unreadable = await cp.evaluate(() => [document.querySelector('#dlg-card').open, document.querySelector('#toast').textContent, document.querySelector('#card-note').textContent]);
+  check('14 card dialog: after an unreadable photo, Speichern says so and keeps the dialog open', unreadable[0] && unreadable[1] === 'Das Bild kann nicht gelesen werden.' && unreadable[2] === unreadable[1], JSON.stringify(unreadable));
+  await cardPhoto.uploadFile(images.jpg);
+  await cp.$eval('#card-save', (b) => b.click());
+  await cardPhoto.uploadFile(images.slow); // red and yellow, slow to read
+  await waitFor(cp, () => !document.querySelector('#dlg-card').open, null, 30000).catch(() => cp.$eval('#dlg-card [data-close]', (b) => b.click()));
   const benPhoto = await cp.evaluate(() => [...document.querySelectorAll('#wall .card')].find((c) => c.querySelector('.name').textContent === 'Ben')?.querySelector('img')?.src ?? '');
-  check('14 card dialog: a photo added and saved at once is saved with the card', isPhoto(benPhoto) && photoBytes(benPhoto) > 500, `${benPhoto.slice(0, 40)} ${isPhoto(benPhoto) ? photoBytes(benPhoto) + ' B' : ''}`);
+  const benLook = isPhoto(benPhoto) ? (await inspect(cp, benPhoto)).mean : [];
+  check('14 card dialog: saving waits for the photo, also for one picked while it waits', isPhoto(benPhoto) && benLook[0] > 150 && benLook[2] < 100, `${isPhoto(benPhoto) ? photoBytes(benPhoto) + ' B' : 'no photo'}, mean ${benLook}`);
   // ... and replaced by a video link
   await openCard('Ben');
   const hadPhoto = await cp.evaluate(() => !!document.querySelector('#card-media img[src^="data:image/jpeg"]'));
+  await setValue(cp, '#card-form input[name=url]', 'youtube.com/@kanal');
+  await waitFor(cp, () => document.querySelector('#card-note').textContent.length > 0).catch(() => {});
+  await cp.evaluate(() => { document.querySelector('#toast').textContent = ''; });
+  await cp.$eval('#card-save', (b) => b.click());
+  await sleep(200);
+  const channel = await cp.evaluate(() => [document.querySelector('#card-note').textContent, document.querySelector('#toast').textContent, document.querySelector('#dlg-card').open]);
+  check('14 card dialog: a channel link is refused, the dialog stays open', channel[0].includes('kein einzelnes Video') && channel[1] === channel[0] && channel[2], JSON.stringify(channel));
   await setValue(cp, '#card-form input[name=url]', 'https://www.youtube.com/watch?v=M7lc1UVf-VE&feature=share');
   await waitFor(cp, () => document.querySelector('#card-media a.media.video img')?.complete).catch(() => {});
   const videoPreview = await cp.evaluate(() => document.querySelector('#card-media a.media.video img')?.naturalWidth > 0);
@@ -641,10 +659,14 @@ try {
   check('14 "Karte schreiben": empty dialog without move and delete', newDialog === 'Karte schreiben,,,,true,true,true,true,0', newDialog);
   await setValue(cp, '#card-form input[name=name]', 'Orga');
   await setValue(cp, '#card-form textarea[name=text]', 'Von uns allen');
+  // typed key by key: no image is fetched for a half-typed address (check 8 counts outside requests)
+  await cp.type('#card-form input[name=url]', 'https://giphy.com/gifs/party-oaGEZtx2Zs1OPSoHQi');
+  await waitFor(cp, () => document.querySelector('#card-media img')?.complete).catch(() => {});
+  check('14 own card: a typed Giphy link shows as its GIF', await cp.evaluate(() => document.querySelector('#card-media img')?.src === 'https://i.giphy.com/media/oaGEZtx2Zs1OPSoHQi/giphy.webp'));
   await cp.$eval('#card-save', (b) => b.click());
   await waitFor(cp, () => !document.querySelector('#dlg-card').open);
   const wallState = () => cp.$$eval('#wall .card', (cs) => cs.map((c) => [c.querySelector('.name').textContent, c.querySelector('.text').textContent, c.querySelector('.sticker')?.textContent ?? '', c.querySelector('a.media.video') ? 'video' : c.querySelector('img') ? 'img' : '']));
-  const expected = JSON.stringify([['Anna M.', 'Gruß von Anna', '', ''], ['Dora', 'Gruß von Dora', '', ''], ['Ben', 'Gruß von Ben, korrigiert', '🎈', 'video'], ['Orga', 'Von uns allen', '', '']]);
+  const expected = JSON.stringify([['Anna M.', 'Gruß von Anna', '', ''], ['Dora', 'Gruß von Dora', '', ''], ['Ben', 'Gruß von Ben, korrigiert', '🎈', 'video'], ['Orga', 'Von uns allen', '', 'img']]);
   const afterEdit = JSON.stringify(await wallState());
   await shot(cp, '14-curated');
   check('14 edit text + sticker, remove photo, add video, move, delete, own card, Enter saves', photoShown && cleared && afterEdit === expected, afterEdit);

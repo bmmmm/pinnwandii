@@ -499,10 +499,11 @@ async function removeContrib(origin) {
 
 // ---- card dialog: curate one post, or write one --------------------------------
 
-// While the dialog is open: the post's origin (null for a new card), its
-// picture as it would be saved (null while the link names no single video or
-// GIF), and a photo still being prepared.
-let card = null; // { origin, img, abort, shrinking }
+// While the dialog is open: the board it belongs to, the post's origin (null
+// for a new card), its picture as it would be saved (null while the link
+// names no single video or GIF), a photo still being prepared and why the
+// last one failed.
+let card = null; // { board, origin, img, abort, shrinking, error, timer }
 function stickerRow(row, selected, onChange) {
   row.replaceChildren(...STICKERS.map((s) => {
     const b = h('button', { type: 'button', textContent: s });
@@ -523,7 +524,7 @@ function cardIndex() {
 }
 function openCardDialog(c, origin) {
   card?.abort?.abort();
-  card = { origin, img: c.img, abort: null, shrinking: null };
+  card = { board: current.id, origin, img: c.img, abort: null, shrinking: null, error: '', timer: 0 };
   $('#card-heading').textContent = origin ? 'Beitrag bearbeiten' : 'Karte schreiben';
   field(cardForm, 'name').value = c.name;
   field(cardForm, 'text').value = c.text;
@@ -553,16 +554,21 @@ function updateMoveButtons(i) {
   $('#card-earlier').disabled = i <= 0;
   $('#card-later').disabled = i < 0 || i >= current.contribs.length - 1;
 }
-// A photo or a link replaces the picture; a photo still being prepared is dropped.
-function setCardMedia(img, url) {
+// A photo or a link replaces the picture; a photo still being prepared is
+// dropped. A typed link is previewed after a pause, as in the write view:
+// no images are fetched for half-typed addresses.
+function setCardMedia(img, url, delay = 0) {
   card.abort?.abort();
   card.shrinking = null;
+  card.error = '';
   card.img = img;
   field(cardForm, 'url').value = url;
   $('#card-note').textContent = '';
-  showCardMedia();
+  clearTimeout(card.timer);
+  if (delay) card.timer = setTimeout(() => card && showCardMedia(), delay);
+  else showCardMedia();
 }
-field(cardForm, 'url').addEventListener('input', (e) => setCardMedia(parseMediaLink(e.target.value), e.target.value));
+field(cardForm, 'url').addEventListener('input', (e) => setCardMedia(parseMediaLink(e.target.value), e.target.value, 300));
 $('#card-nomedia').onclick = () => setCardMedia('', '');
 field(cardForm, 'photo').addEventListener('change', async (e) => {
   const file = e.target.files[0];
@@ -579,6 +585,7 @@ field(cardForm, 'photo').addEventListener('change', async (e) => {
     setCardMedia(ladder.at(-1).img, ''); // no message to fit: the best version
   } catch (err) {
     if (card !== state || state.shrinking !== shrinking) return;
+    state.error = err.message;
     $('#card-note').textContent = err.message;
   } finally {
     if (state.shrinking === shrinking) state.shrinking = null;
@@ -589,8 +596,13 @@ cardForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const state = card;
   if (!state) return;
-  if (state.shrinking) await state.shrinking.catch(() => {});
-  if (card !== state) return; // closed or saved meanwhile
+  while (state.shrinking) await state.shrinking.catch(() => {}); // also a photo picked while waiting
+  if (card !== state || current?.id !== state.board) return; // closed, saved or left meanwhile
+  if (state.error) { // the last photo failed: say so once, a second click keeps the picture as it is
+    toast(state.error);
+    state.error = '';
+    return;
+  }
   if (state.img === null) return toast(NO_MEDIA);
   const next = {
     name: field(cardForm, 'name').value.trim(),
@@ -613,7 +625,10 @@ cardForm.addEventListener('submit', async (e) => {
     if (codec.addOwnPost(current, next) === 'full') return toast(`Die Pinnwand ist voll (höchstens ${codec.LIMITS.contribs} Beiträge).`);
     newFrom = current.contribs.length - 1;
   }
-  if (!store.save(current)) return;
+  if (!store.save(current)) {
+    reloadCurrent(); // drop the change: the wall and the built files show what is stored
+    return;
+  }
   card = null; // a second click, also one waiting for the same photo, saves nothing
   renderBoard(current, newFrom);
   $('#dlg-card').close();
