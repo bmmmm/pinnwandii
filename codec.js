@@ -331,3 +331,25 @@ export async function mergeContribs(board, candidates) {
   }
   return r;
 }
+
+/**
+ * Merges whatever a person pasted or dropped: a backup file (the board tuple
+ * as JSON) or free text with contribution links. Chat exports also start
+ * with "[" (a timestamp), so only text that really parses as JSON counts as
+ * a backup; everything else is searched for tokens.
+ */
+export async function mergeText(board, text) {
+  const trimmed = text.trim();
+  if (/^[[{]/.test(trimmed) && /[\]}]$/.test(trimmed)) {
+    let parsed;
+    try { parsed = JSON.parse(trimmed); } catch { parsed = undefined; }
+    if (parsed !== undefined) {
+      try {
+        return { broken: 0, ...mergeBoard(board, validate('board', parsed)) };
+      } catch {
+        return { added: 0, dupes: 0, foreign: 0, broken: 1 };
+      }
+    }
+  }
+  return mergeContribs(board, extractContribs(text));
+}

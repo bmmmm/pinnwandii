@@ -5,7 +5,7 @@ import { deepEqual, equal, ok, rejects, throws } from 'node:assert/strict';
 import {
   LIMITS, addContrib, decodeBoard, decodeContrib, decodeInvite, encodeBoard,
   encodeContrib, encodeInvite, extractContribs, fromBase64url, mergeContribs,
-  pack, toBase64, toBase64url, unpack, validate,
+  mergeText, pack, toBase64, toBase64url, toTuple, unpack, validate,
 } from './codec.js';
 
 const ID = 'AbC-_9';
@@ -154,4 +154,17 @@ test('9 size budget: 50 text contributions and one photo contribution', async ()
   ok(tok.length <= 12_000, `board token is ${tok.length} chars`);
   const withPhoto = await encodeContrib({ ...contrib, img: photo(randomBytes(24 * 1024, 9)) });
   ok(withPhoto.length <= 34_000, `photo token is ${withPhoto.length} chars`);
+});
+
+test('10 mergeText: chat export starting with "[" is not a backup, real backup is a union', async () => {
+  const tok = await encodeContrib(contrib);
+  const target = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [] };
+  const chat = `[25.09.26, 12:01] Anna: https://x.test/#c=${tok}\n[25.09.26, 12:02] Ben: [Bild weggelassen]`;
+  deepEqual(await mergeText(target, chat), { added: 1, dupes: 0, foreign: 0, broken: 0 });
+  const backup = JSON.stringify(toTuple('board', board));
+  ok(backup.startsWith('['));
+  deepEqual(await mergeText(target, backup), { added: 3, dupes: 0, foreign: 0, broken: 0 });
+  deepEqual(await mergeText(target, backup), { added: 0, dupes: 3, foreign: 0, broken: 0 });
+  deepEqual(await mergeText(target, '[1, 2, 3]'), { added: 0, dupes: 0, foreign: 0, broken: 1 });
+  equal(target.contribs.length, 4);
 });

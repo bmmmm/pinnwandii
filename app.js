@@ -395,22 +395,11 @@ async function removeContrib(i) {
   renderMergeList();
 }
 
-async function ingest(text) {
-  const trimmed = text.trim();
-  if (/^[[{]/.test(trimmed)) {
-    try {
-      return { broken: 0, ...codec.mergeBoard(current, codec.validate('board', JSON.parse(trimmed))) };
-    } catch {
-      return { added: 0, dupes: 0, foreign: 0, broken: 1 };
-    }
-  }
-  return codec.mergeContribs(current, codec.extractContribs(text));
-}
 async function mergeRun(texts) {
   const before = current.contribs.length;
   const total = { added: 0, dupes: 0, foreign: 0, broken: 0 };
   for (const t of texts) {
-    const r = await ingest(t);
+    const r = await codec.mergeText(current, t);
     for (const k of Object.keys(total)) total[k] += r[k];
   }
   store.save(current);
@@ -418,7 +407,14 @@ async function mergeRun(texts) {
   renderMergeList();
   $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt`;
 }
-const readFiles = (files) => Promise.all([...files].map((f) => f.text()));
+async function readFiles(files) {
+  try {
+    return await Promise.all([...files].map((f) => f.text()));
+  } catch {
+    toast('Eine Datei konnte nicht gelesen werden.');
+    return [];
+  }
+}
 
 $('#merge-go').onclick = async () => {
   await mergeRun([$('#merge-text').value]);
