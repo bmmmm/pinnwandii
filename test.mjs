@@ -2,6 +2,7 @@
 // Run: node --test test.mjs
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 import { test } from 'node:test';
 import { deepEqual, equal, notEqual, ok, rejects, throws } from 'node:assert/strict';
 import {
@@ -11,7 +12,7 @@ import {
 } from './codec.js';
 import { MAX_SHAPES, isSketch, sketchSvg } from './sketch.js';
 import { encodeJpeg, jpegHeader, ssim, strippedLength, stripJpeg, unstripJpeg } from './jpeg.js';
-import { FRAME_SRC, mediaOf, parseMediaLink, playInline } from './media.js';
+import { FRAME_SRC, PLAYER_JS, hasPlayable, mediaOf, parseMediaLink, playInline, scriptHash, viewToken } from './media.js';
 
 const ID = 'AbC-_9';
 const board = {
@@ -555,7 +556,9 @@ test('30 media links travel through tokens and boards unchanged, origins include
 // A document with one media link, just enough for playInline().
 function mediaDoc(protocol) {
   const listeners = [];
+  const bar = { hidden: false }; // the videos file's "Online ansehen"
   const doc = { location: { protocol }, activeElement: null, frames: [] };
+  doc.querySelectorAll = (sel) => (sel === '.online' ? [bar] : []);
   doc.addEventListener = (type, fn) => listeners.push([type, fn]);
   doc.createElement = (tag) => {
     const e = { tagName: tag.toUpperCase(), focus: () => { doc.activeElement = e; } };
@@ -577,12 +580,13 @@ function mediaDoc(protocol) {
     for (const [type, fn] of listeners) if (type === 'click') fn(e);
     return prevented;
   };
-  return { doc, link, click, listeners };
+  return { doc, link, click, listeners, bar };
 }
 
 test('31 playInline: a plain click on http(s) swaps the link for the player, nothing else does', () => {
-  const { doc, link, click } = mediaDoc('https:');
+  const { doc, link, click, bar } = mediaDoc('https:');
   playInline(doc);
+  equal(bar.hidden, true, 'online, the videos file needs no "Online ansehen"');
   for (const o of [{ button: 1 }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }]) {
     equal(click(o), false, JSON.stringify(o));
   }
@@ -600,7 +604,7 @@ test('31 playInline: a plain click on http(s) swaps the link for the player, not
     const local = mediaDoc(protocol);
     playInline(local.doc);
     equal(local.click(), false, protocol);
-    deepEqual([local.listeners.length, local.doc.frames.length], [0, 0], protocol);
+    deepEqual([local.listeners.length, local.doc.frames.length, local.bar.hidden], [0, 0, false], protocol);
   }
   // the app's CSP lets exactly these players in
   const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(readFileSync(new URL('./index.html', import.meta.url), 'utf8'))[1];
@@ -630,4 +634,31 @@ test('32 own cards get a random origin: written again after a delete they are ne
   g.contribs[0].img = YT;
   deepEqual(await mergeContribs(g, [tok]), { added: 0, dupes: 1, foreign: 0, broken: 0, full: 0 });
   deepEqual(g.contribs.map((e) => e.img), [YT]);
+});
+
+test('33 the videos file: its script is playInline, allowed by its hash; the online view fits one link', async () => {
+  ok(!/<\/script|<!--/i.test(PLAYER_JS), 'safe inside <script>');
+  for (const protocol of ['https:', 'file:', 'blob:']) {
+    const m = mediaDoc(protocol);
+    vm.runInNewContext(PLAYER_JS, { document: m.doc });
+    const online = protocol === 'https:';
+    deepEqual([m.click({ metaKey: true }), m.click(), m.doc.frames.length, m.doc.frames[0]?.src, m.bar.hidden],
+      online ? [false, true, 1, m.link.dataset.embed, true] : [false, false, 0, undefined, false], protocol);
+  }
+  equal(await scriptHash(PLAYER_JS), `'sha256-${createHash('sha256').update(PLAYER_JS).digest('base64')}'`);
+  // the online view: the whole board if it fits, else the cards that need a player, else nothing
+  const video = { name: 'Vera', text: 'Ein Lied', sticker: '', img: `${YT}&t=90`, origin: 'Vera0000' };
+  const small = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [{ name: 'A', text: 'a', sticker: '', img: photo(randomBytes(900, 3)), origin: 'A0000000' }, video], deleted: ['gone0000'] };
+  const whole = await decodeBoard(await viewToken(small, 32_000));
+  deepEqual([whole.contribs.map((c) => c.name), whole.deleted], [['A', 'Vera'], []]);
+  const big = { ...small, contribs: [...Array.from({ length: 200 }, (_, i) => ({ name: `P${i}`, text: 'Foto', sticker: '', img: photo(randomBytes(1000, i + 1)), origin: `p${String(i).padStart(7, '0')}` })), video] };
+  ok((await encodeBoard(big)).length > 32_000);
+  const token = await viewToken(big, 32_000);
+  ok(token.length <= 32_000, `${token.length}`);
+  deepEqual((await decodeBoard(token)).contribs.map((c) => [c.name, c.img]), [['Vera', video.img]]);
+  equal(await viewToken(big, 50), null, 'not even the videos fit');
+  const tenor = { ...small, contribs: [{ ...video, img: TENOR }] };
+  ok(hasPlayable(tenor) && await viewToken(tenor, 32_000));
+  const none = { ...small, contribs: [small.contribs[0], { ...video, img: GIPHY }] };
+  deepEqual([hasPlayable(none), await viewToken(none, 32_000)], [false, null], 'nothing to play');
 });

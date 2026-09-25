@@ -40,7 +40,13 @@ Three roles, one static page:
    move the card, delete it. *Karte schreiben* adds a card of the
    organizer's own. Then *Fertige Seite* builds
    the finished pinboard: one HTML file without JavaScript, photos
-   embedded.
+   embedded, videos as thumbnail links. A board with YouTube videos or
+   Tenor GIFs also gets a *videos file*: the same page with one small
+   script (allowed by its hash in the page's CSP) that plays them in place
+   once the page is online. From a local file YouTube refuses to play (it
+   needs the page's address as Referer), so there the videos file shows
+   *Online ansehen*: a `#v=` link that opens the same board in the app,
+   where the videos play.
 
 The organizer is the database. Nothing is ever written to a server, and the
 invitation link never reveals who has already replied. Each card remembers
@@ -70,6 +76,7 @@ embedding shows YouTube's notice with a link to watch it there.
 | Contribution with photo | whole message ≤ 1 900 bytes | one message in any messenger, Signal included |
 | Admin link `#b=` (whole board) | 3–4 KB for 50 texts, ~1 KB more per photo, offered up to 32 000 chars | second device, backup |
 | Finished page | file | download, share, print |
+| Videos file | file, plus an *Online ansehen* link `#v=`: the whole board up to 32 000 chars, else only the cards with players, else none (each card then links to YouTube or Tenor) | download, share; the link opens in the browser |
 
 Tokens are `3.<base64url>` of `u32 len | zlib(JSON) | photo bytes…`. The
 zlib checksum turns a copy error into a clear message instead of a garbled
@@ -85,7 +92,8 @@ before version 3 get their card origins on loading. Hard limits
 - Second device or in-app browser without storage: use the *Admin-Link* or
   the JSON backup from the settings dialog.
 - Publish the finished board under a short link: commit the built file as
-  `boards/<name>.html` in this repository; GitHub Pages serves it.
+  `boards/<name>.html` in this repository; GitHub Pages serves it. Served
+  like that, the videos file plays its videos in place.
 
 ## Repository layout
 
@@ -109,8 +117,10 @@ python3 -m http.server 8765   # ES modules need http://, not file://
 node --test test.mjs          # Node ≥ 21.2
 ```
 
-No dependencies, no build. The browser check needs `puppeteer-core` and a
-Chromium outside the repository:
+No dependencies, no build. A videos file built from a local copy links its
+*Online ansehen* to that copy (e.g. `localhost`); build it from the hosted
+app to share it. The browser check needs `puppeteer-core` and a Chromium
+outside the repository:
 
 ```sh
 npm i --prefix ~/.cache/pinnwandii-verify puppeteer-core

@@ -5,11 +5,13 @@
 // at worst a broken image). parseMediaLink() normalizes a link once, when it
 // is typed; mediaOf() reads any stored URL, raw links typed before included,
 // and builds player and thumbnail addresses from the parsed id only. Pure
-// ESM; playInline() is self-contained so a built page can inline its source.
+// ESM; playInline() is self-contained so the videos file (a finished page
+// with players) can inline its source.
 //
 //   YouTube  https://www.youtube.com/watch?v=<id>[&t=<seconds>]   thumbnail, player on click
 //   Tenor    https://tenor.com/view/<id>                          player on click (it loads trackers)
 //   Giphy    https://i.giphy.com/media/<id>/giphy.webp            plain image
+import { encodeBoard, toBase64 } from './codec.js';
 
 const YOUTUBE = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be', 'youtube-nocookie.com', 'www.youtube-nocookie.com']);
 const TENOR = new Set(['tenor.com', 'www.tenor.com']);
@@ -113,9 +115,11 @@ export function mediaOf(img) {
  * Plays videos and GIFs in place: a click on a card's media link inserts the
  * player after the link. Only on http(s): from a local file YouTube refuses
  * to play (no Referer), and the link opens the video on its site instead.
+ * There the videos file keeps its "Online ansehen" bar; online it hides it.
  */
 export function playInline(doc) {
   if (!/^https?:$/.test(doc.location.protocol)) return;
+  for (const bar of doc.querySelectorAll('.online')) bar.hidden = true;
   doc.addEventListener('click', (e) => {
     const a = e.target.closest?.('a.media[data-embed]:not(.played)');
     if (!a || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -131,4 +135,34 @@ export function playInline(doc) {
     a.classList.add('played');
     f.focus();
   });
+}
+
+// ---- the videos file ------------------------------------------------------------
+
+/** The script of the videos file. */
+export const PLAYER_JS = `(${playInline})(document);`.replace(/\r\n?/g, '\n');
+
+/** CSP source for an inline script: 'sha256-…' of its text. */
+export async function scriptHash(js) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(js));
+  return `'sha256-${toBase64(new Uint8Array(digest))}'`;
+}
+
+const playable = (c) => ['youtube', 'tenor'].includes(mediaOf(c.img)?.kind);
+/** True if a board has a card that needs a player (a YouTube video, a Tenor GIF). */
+export const hasPlayable = (board) => board.contribs.some(playable);
+
+/**
+ * Token for the online view (#v=) of a videos file, at most `cap` characters:
+ * the whole board if it fits, else only the cards that need a player (they
+ * carry no photo), else null; null too for a board without such cards. A
+ * view needs no origins and no deleted list.
+ */
+export async function viewToken(board, cap) {
+  if (!hasPlayable(board)) return null;
+  for (const contribs of [board.contribs, board.contribs.filter(playable)]) {
+    const token = await encodeBoard({ ...board, contribs: contribs.map(({ origin, ...c }) => c), deleted: [] });
+    if (token.length <= cap) return token;
+  }
+  return null;
 }

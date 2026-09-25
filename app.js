@@ -4,7 +4,7 @@
 // rendered through textContent / createElement, never through innerHTML.
 import * as codec from './codec.js';
 import { MAX_SIDE, encodeJpeg, ssim, strippedLength } from './jpeg.js';
-import { mediaOf, parseMediaLink, playInline } from './media.js';
+import { FRAME_SRC, PLAYER_JS, hasPlayable, mediaOf, parseMediaLink, playInline, scriptHash, viewToken } from './media.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -13,6 +13,7 @@ const STICKERS = ['🎉', '🎂', '🎈', '🥳', '❤️', '🌟', '🍀', '�
 const BASE = location.href.split(/[?#]/)[0]; // without ?fbclid= and the like
 const DEFAULT_THEME = { title: 'Pinnwand', preset: 'p', hue: 210 };
 const KB = (n) => `${(n / 1024).toFixed(1).replace('.', ',')} KB`;
+const LINK_CAP = 32_000; // longest link offered: admin link, online view of the videos file
 const plural = (n) => (n === 1 ? '1 Beitrag' : `${n} Beiträge`);
 const SAVE_FAILED = 'Speichern nicht möglich: Speicher voll oder gesperrt. Lade eine Sicherung herunter.';
 const fullNote = (n) => (n ? ` ${n} nicht übernommen: Pinnwand voll (höchstens ${codec.LIMITS.contribs}).` : '');
@@ -692,7 +693,10 @@ const loadCss = async () => (cssText ??= await fetch('style.css').then((r) => {
   return r.text();
 }));
 
-function buildStaticPage(board, css) {
+// The print version has no script. The videos file adds the player
+// (PLAYER_JS, allowed by its hash) and a link to the same board in the app,
+// where YouTube plays: from a local file it refuses to (no Referer).
+function buildStaticPage(board, css, { script = '', hash = '', online = '' } = {}) {
   const doc = document.implementation.createHTMLDocument(board.title);
   doc.documentElement.lang = 'de';
   const charset = doc.createElement('meta');
@@ -702,7 +706,8 @@ function buildStaticPage(board, css) {
   viewport.content = 'width=device-width, initial-scale=1';
   const csp = doc.createElement('meta');
   csp.httpEquiv = 'Content-Security-Policy';
-  csp.content = "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:";
+  csp.content = "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:"
+    + (script ? `; frame-src ${FRAME_SRC}; script-src ${hash}; base-uri 'none'` : '');
   const title = doc.createElement('title');
   title.textContent = board.title;
   const style = doc.createElement('style');
@@ -715,13 +720,31 @@ function buildStaticPage(board, css) {
   const h1 = doc.createElement('h1');
   h1.textContent = board.title;
   header.append(h1);
+  if (online) {
+    const bar = doc.createElement('p');
+    bar.className = 'online';
+    const a = doc.createElement('a');
+    a.href = online;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = 'Online ansehen';
+    bar.append(a, ': Dort spielen die Videos, in dieser Datei öffnen sie YouTube.');
+    header.append(bar);
+  }
   const main = doc.createElement('main');
   main.append(renderWall(board, doc));
   doc.body.append(header, main);
+  if (script) {
+    const s = doc.createElement('script');
+    s.textContent = script;
+    doc.body.append(s);
+  }
   return `<!doctype html>\n${doc.documentElement.outerHTML}`;
 }
-// The finished page as a file, or null (with a toast) if the stylesheet cannot be loaded.
-async function pageFile(board) {
+const onlineToken = (board) => viewToken(board, LINK_CAP - `${BASE}#v=`.length);
+// The finished page as a file ('print' or 'videos'), or null (with a toast)
+// if the stylesheet cannot be loaded.
+async function pageFile(board, variant = 'print') {
   let css;
   try {
     css = await loadCss();
@@ -729,12 +752,17 @@ async function pageFile(board) {
     toast(CSS_FAILED);
     return null;
   }
-  return new File([buildStaticPage(board, css)], `pinnwand-${board.id}.html`, { type: 'text/html' });
+  if (variant === 'print') return new File([buildStaticPage(board, css)], `pinnwand-${board.id}.html`, { type: 'text/html' });
+  const token = await onlineToken(board);
+  const html = buildStaticPage(board, css, { script: PLAYER_JS, hash: await scriptHash(PLAYER_JS), online: token ? `${BASE}#v=${token}` : '' });
+  return new File([html], `pinnwand-${board.id}-videos.html`, { type: 'text/html' });
 }
 
 function openBuild() {
   loadCss().catch(() => toast(CSS_FAILED));
   $('#build-share').hidden = !navigator.canShare;
+  $('#build-video-share').hidden = !navigator.canShare;
+  $('#build-videos').hidden = !hasPlayable(current);
   $('#dlg-build').showModal();
 }
 $('#build-preview').onclick = async () => {
@@ -745,15 +773,25 @@ $('#build-preview').onclick = async () => {
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
   if (!win) toast('Der Browser hat das Fenster blockiert: bitte herunterladen.');
 };
-$('#build-download').onclick = async () => {
-  const f = await pageFile(current);
+async function downloadPage(variant) {
+  const f = await pageFile(current, variant);
   if (f) download(f, f.name);
-};
-$('#build-share').onclick = async () => {
-  const f = await pageFile(current);
+}
+async function sharePage(variant) {
+  const f = await pageFile(current, variant);
   if (!f) return;
   if (canShareFiles([f])) await shareFiles([f]);
   else toast('Dateien teilen geht hier nicht: bitte herunterladen.');
+}
+// Two buttons, not one that saves both files: a second download in one click makes Chrome ask.
+$('#build-download').onclick = () => downloadPage('print');
+$('#build-share').onclick = () => sharePage('print');
+$('#build-video-download').onclick = () => downloadPage('videos');
+$('#build-video-share').onclick = () => sharePage('videos');
+$('#build-online').onclick = async () => {
+  const token = await onlineToken(current);
+  if (!token) return toast(`Zu viele Beiträge für einen Link (höchstens ${KB(LINK_CAP)}).`);
+  if (!window.open(`${BASE}#v=${token}`, '_blank')) toast('Der Browser hat das Fenster blockiert.');
 };
 
 // ---- settings ---------------------------------------------------------------
@@ -787,7 +825,7 @@ settingsForm.addEventListener('change', () => {
 settingsForm.addEventListener('submit', (e) => e.preventDefault());
 $('#admin-link').onclick = async () => {
   const link = await adminLink(current);
-  if (link.length > 32_000) {
+  if (link.length > LINK_CAP) {
     $('#admin-note').textContent = `Der Admin-Link wäre ${KB(link.length)} groß, zu viel für einen Link. Nutze die Sicherung.`;
     return;
   }

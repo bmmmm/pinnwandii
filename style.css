@@ -33,6 +33,8 @@ body {
 
 .top { padding: 1.5rem 1rem 0.5rem; text-align: center; }
 .top h1 { margin: 0; font-size: clamp(1.5rem, 5vw, 2.5rem); overflow-wrap: anywhere; }
+.top .online { margin: 0.5rem 0 0; font-size: 0.95rem; }
+.top .online a { color: inherit; font-weight: 600; }
 h2 { font-size: 1.25rem; margin: 0 0 0.75rem; }
 h3 { font-size: 1rem; margin: 1rem 0 0.5rem; }
 p { margin: 0 0 0.75rem; }
@@ -170,7 +172,7 @@ dialog::backdrop { background: #0006; }
 @media print {
   body { background: #fff; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   .card { rotate: none; box-shadow: none; border: 1px solid #0002; }
-  .toolbar, .meta, dialog, #toast, .card .edit, .card iframe.media { display: none; }
+  .toolbar, .meta, dialog, #toast, .card .edit, .card iframe.media, .top .online { display: none; }
   a.media.played { display: block; }
 }
 @media (prefers-reduced-motion: reduce) {

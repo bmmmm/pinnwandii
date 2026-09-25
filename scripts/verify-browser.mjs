@@ -9,12 +9,13 @@
 // interception (no local port needed); ORIGIN=https://… tests a deployment.
 // CHROME points to the browser binary (default: Playwright's Chromium).
 // Screenshots and downloads go to OUT (default: a temp directory).
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { decodeContrib, encodeBoard, encodeContrib, encodeInvite, newId, originOf, toBase64 } from '../codec.js';
+import { decodeBoard, decodeContrib, encodeBoard, encodeContrib, encodeInvite, newId, originOf, toBase64 } from '../codec.js';
 import { encodeJpeg } from '../jpeg.js';
 
 const require = createRequire(path.join(process.env.PUPPETEER_DIR ?? process.cwd(), 'x.js'));
@@ -47,6 +48,7 @@ const utf8 = (s) => Buffer.byteLength(s, 'utf8');
 // depend on them, and no request leaves for any other outside host.
 const THUMB = Buffer.from(encodeJpeg(new Uint8Array(48 * 27 * 4).map((_, i) => (i % 4 === 3 ? 255 : 90 + (i % 7) * 20)), 48, 27, 60));
 const players = []; // { url, referer } of every player page requested
+const served = new Map(); // URL (without hash) -> HTML: a built page "put online"
 async function newPage(ctx, label) {
   const page = await ctx.newPage();
   page.on('console', (m) => consoleLog.push(`[${label}] ${m.type()}: ${m.text()}`));
@@ -65,6 +67,7 @@ async function newPage(ctx, label) {
       consoleLog.push(`[${label}] outside request: ${r.url().slice(0, 100)}`);
       return r.respond({ status: 404, body: 'not found' });
     }
+    if (served.has(u.origin + u.pathname)) return r.respond({ status: 200, contentType: 'text/html', body: served.get(u.origin + u.pathname) });
     if (!LOCAL) return r.continue();
     if (failCssFetch && r.resourceType() === 'fetch' && u.pathname === '/style.css') return r.respond({ status: 404, body: 'not found' });
     const file = path.join(REPO, u.pathname === '/' ? 'index.html' : decodeURIComponent(u.pathname));
@@ -394,6 +397,7 @@ try {
   // ---- 6. finished page: preview tab and download ------------------------------------
   await page.click('#toolbar [data-act=build]');
   await waitFor(page, () => document.querySelector('#dlg-build').open);
+  check('6 a board without videos: no videos file offered', await page.$eval('#build-videos', (e) => e.hidden));
   const popupPromise = new Promise((r) => browser.once('targetcreated', (t) => r(t)));
   await page.click('#build-preview');
   const preview = await (await popupPromise).page();
@@ -784,6 +788,48 @@ try {
   const mh = fs.existsSync(medHtml) ? fs.readFileSync(medHtml, 'utf8') : '';
   const thumbs = mh.match(/<img [^>]*hqdefault[^>]*>/g) ?? [];
   check('15 print version: thumbnail links loaded eagerly (printing), no <iframe, no <script', (mh.match(/class="media video"/g) ?? []).length === 2 && thumbs.length === 2 && thumbs.every((t) => t.includes('loading="eager"')) && mh.includes('class="media gif-tenor"') && !/<iframe|<script/i.test(mh), `${mh.length} chars, ${thumbs.join(' ')}`);
+  // the videos file: the same page with the player script and a link to the online view
+  check('15 a board with videos: the videos file is offered', await visible(mp, '#build-videos'));
+  await mp.click('#build-video-download');
+  const vidPath = path.join(OUT, 'downloads', `pinnwand-${med.id}-videos.html`);
+  for (let i = 0; i < 50 && !fs.existsSync(vidPath); i++) await sleep(100);
+  const vh = fs.existsSync(vidPath) ? fs.readFileSync(vidPath, 'utf8') : '';
+  const vScripts = [...vh.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  const vCsp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(vh)?.[1] ?? '';
+  const vHash = vScripts.length ? `'sha256-${createHash('sha256').update(vScripts[0]).digest('base64')}'` : 'none';
+  check('15 videos file: one script, allowed by its hash; the players in frame-src', (vh.match(/<script/g) ?? []).length === 1 && vCsp.split('; ').includes(`script-src ${vHash}`) && vCsp.split('; ').includes('frame-src https://www.youtube-nocookie.com https://tenor.com'), vCsp);
+  const onlineHref = /<p class="online"><a href="([^"]+)"/.exec(vh)?.[1] ?? '';
+  const onlineBoard = onlineHref.includes('#v=') ? await decodeBoard(onlineHref.split('#v=')[1]).catch(() => null) : null;
+  const vo = await newPage(mCtx, 'videos-view');
+  if (onlineBoard) await vo.goto(onlineHref, { waitUntil: 'networkidle0' });
+  check('15 videos file: "Online ansehen" opens the whole board in the app', onlineHref.startsWith(`${ORIGIN}/#v=`) && onlineBoard?.contribs.length === 4 && (await cardCount(vo)) === 4, onlineHref.slice(0, 60));
+  await vo.close();
+  const vf = await newPage(mCtx, 'videos-file');
+  await vf.goto(`file://${vidPath}`, { waitUntil: 'load' });
+  await vf.evaluate(() => window.addEventListener('click', (e) => e.preventDefault())); // keep the link from opening YouTube
+  await vf.$eval('a.media.video', (a) => a.click());
+  await sleep(300);
+  const fromDisk = await vf.evaluate(() => [getComputedStyle(document.querySelector('.online')).display !== 'none', document.querySelectorAll('iframe').length, document.querySelectorAll('.card').length].join());
+  check('15 videos file from disk: bar shown, a click starts no player', fromDisk === 'true,0,4', fromDisk);
+  await vf.close();
+  served.set(`${ORIGIN}/boards/t.html`, vh);
+  const vs = await newPage(mCtx, 'videos-online');
+  await vs.goto(`${ORIGIN}/boards/t.html`, { waitUntil: 'networkidle0' });
+  const known = players.length;
+  await vs.bringToFront();
+  await vs.click('a.media.video');
+  await waitFor(vs, () => !!document.querySelector('iframe.media')).catch(() => {});
+  await sleep(300);
+  const online = await vs.evaluate(() => [getComputedStyle(document.querySelector('.online')).display, document.querySelector('iframe.media')?.src ?? '', document.activeElement?.tagName]);
+  const onlineReq = players.slice(known).find((p) => p.url === YT_EMBED);
+  check('15 videos file online: bar hidden, a click plays in place, Referer sent', online.join() === `none,${YT_EMBED},IFRAME` && onlineReq?.referer === `${SITE}/`, `${online} ${JSON.stringify(onlineReq)}`);
+  await vs.emulateMediaType('print');
+  const vPrint = await vs.evaluate(() => [getComputedStyle(document.querySelector('iframe.media')).display, getComputedStyle(document.querySelector('a.media.played')).display].join());
+  await vs.emulateMediaType(null);
+  check('15 videos file printed: player hidden, thumbnail shown', vPrint === 'none,block', vPrint);
+  await shot(vs, '15-videos-file-online');
+  await vs.close();
+  await mp.bringToFront();
   await mp.click('#dlg-build [data-close]');
   // a hidden player would keep playing: closing its dialog or leaving its view drops it
   await mp.$eval('#wall .card:nth-child(1) button.edit', (b) => b.click());
