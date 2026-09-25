@@ -27,6 +27,11 @@ Three roles, one static page:
    header is left out of the link and put back on arrival; at ~1 KB that
    doubles the picture data. The longer the greeting, the smaller the
    photo; a greeting that leaves no room at all goes without it.
+   Instead of a photo a greeting can carry one link: a YouTube video, a
+   GIF from Tenor or Giphy, or any https image. Pasted links are reduced to
+   one canonical address (`media.js`: tracking parameters dropped, the
+   start time kept), which travels like an image link, so the link format
+   is unchanged.
 3. **Organizer** collects the replies on the merge page: paste links, paste a
    whole chat export, read the clipboard or drop the files. Duplicates,
    foreign pinboards and truncated links are counted, not merged. Every
@@ -45,6 +50,13 @@ backup, after the app asks (with the names) whether to delete here too;
 where both devices edited the same card, the device you merge into keeps
 its version. A board nobody curated is stored exactly as before version 3,
 so a tab still running an older copy of the app can read it.
+
+Videos and GIFs on the wall: a YouTube card shows the video's thumbnail
+(loaded from YouTube at once) and plays in place on a click, through
+`youtube-nocookie.com`; a Tenor GIF waits for a click, because Tenor's
+player loads Google Analytics and ad trackers; a Giphy GIF or a direct GIF
+address is a plain image and shows at once. A video whose owner disabled
+embedding shows YouTube's notice with a link to watch it there.
 
 ## Links and limits
 
@@ -81,6 +93,7 @@ before version 3 get their card origins on loading. Hard limits
 | `codec.js` | Token codec, schema validation, merge helpers; pure ESM |
 | `jpeg.js` | JPEG encoder with fixed tables, header stripping, SSIM; pure ESM |
 | `sketch.js` | Reads the photo sketches of version 2 links; pure ESM |
+| `media.js` | YouTube, Tenor and Giphy links: canonical form, thumbnails, players; pure ESM |
 | `app.js` | Router, views, storage, photo pipeline, static page builder |
 | `test.mjs` | `node --test` suite for codec and photos |
 | `scripts/verify-browser.mjs` | End-to-end check in headless Chromium |

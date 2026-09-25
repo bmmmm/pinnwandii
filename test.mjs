@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Run: node --test test.mjs
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { deepEqual, equal, ok, rejects, throws } from 'node:assert/strict';
 import {
@@ -10,6 +11,7 @@ import {
 } from './codec.js';
 import { MAX_SHAPES, isSketch, sketchSvg } from './sketch.js';
 import { encodeJpeg, jpegHeader, ssim, strippedLength, stripJpeg, unstripJpeg } from './jpeg.js';
+import { FRAME_SRC, mediaOf, parseMediaLink, playInline } from './media.js';
 
 const ID = 'AbC-_9';
 const board = {
@@ -464,4 +466,143 @@ test('27 an uncurated board is stored as before version 3; deletions from elsewh
   equal(keep.contribs.length, 2);
   deepEqual(await mergeText(b, JSON.stringify(toTuple('board', other))), { added: 0, dupes: 1, foreign: 0, broken: 0, full: 0, removed: 1 });
   deepEqual(b.contribs.map((e) => e.name), ['Anna']);
+});
+
+const YT = 'https://www.youtube.com/watch?v=M7lc1UVf-VE';
+const GIPHY = 'https://i.giphy.com/media/oaGEZtx2Zs1OPSoHQi/giphy.webp';
+const TENOR = 'https://tenor.com/view/10879878982515761105';
+
+test('28 pasted YouTube, Tenor and Giphy links become one canonical https URL', () => {
+  const accepts = [
+    ['https://youtu.be/o_NZUN7FONU?si=x&t=1m30s', 'https://www.youtube.com/watch?v=o_NZUN7FONU&t=90'],
+    ['youtube.com/watch?v=M7lc1UVf-VE&list=PL1&index=2&pp=ygU', YT],
+    ['https://m.youtube.com/watch?v=M7lc1UVf-VE&feature=share', YT],
+    ['https://music.youtube.com/watch?v=M7lc1UVf-VE', YT],
+    ['https://www.youtube.com/shorts/M7lc1UVf-VE?feature=share', YT],
+    ['https://www.youtube.com/live/M7lc1UVf-VE', YT],
+    ['https://www.youtube.com/embed/M7lc1UVf-VE?start=42', `${YT}&t=42`],
+    ['https://www.youtube-nocookie.com/embed/M7lc1UVf-VE', YT],
+    ['http://youtu.be/M7lc1UVf-VE?t=90s', `${YT}&t=90`],
+    [' https://youtu.be/M7lc1UVf-VE?t=1h2m3s\n', `${YT}&t=3723`],
+    ['https://www.youtube.com/watch?v=M7lc1UVf-VE&t=abc', YT],
+    ['https://www.youtube.com/watch?v=M7lc1UVf-VE&t=99999999999999999999999', YT],
+    ['https://youtu.be/M7lc1UVf-VE/', YT],
+    ['https://www.youtube.com/watch?v=M7lc1UVf-VE\u200B', YT],
+    ['https://tenor.com/view/birthday-happy-birthday-gif-10879878982515761105', TENOR],
+    ['tenor.com/de/view/birthday-gif-10879878982515761105', TENOR],
+    ['https://tenor.com/embed/10879878982515761105', TENOR],
+    ['https://giphy.com/gifs/celebrate-birthday-happy-oaGEZtx2Zs1OPSoHQi', GIPHY],
+    ['https://giphy.com/gifs/oaGEZtx2Zs1OPSoHQi', GIPHY],
+    ['https://giphy.com/stickers/party-oaGEZtx2Zs1OPSoHQi', GIPHY],
+    ['https://giphy.com/embed/oaGEZtx2Zs1OPSoHQi', GIPHY],
+    ['https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/oaGEZtx2Zs1OPSoHQi/giphy.gif?cid=790b', GIPHY],
+    ['https://media.giphy.com/media/oaGEZtx2Zs1OPSoHQi/giphy.gif', GIPHY],
+    ['https://i.giphy.com/oaGEZtx2Zs1OPSoHQi.webp', GIPHY],
+  ];
+  for (const [input, out] of accepts) {
+    equal(parseMediaLink(input), out, input);
+    ok(/^https:\/\/\S+$/.test(out) && out.length <= LIMITS.url, out);
+    equal(parseMediaLink(out), out, `${out} is a fixed point`);
+    ok(validate('contrib', [ID, 'A', 'B', '', out]));
+  }
+  // any other input is left to the codec, which accepts only https
+  const unchanged = [
+    'https://example.org/a.jpg', 'https://media1.tenor.com/m/abc/happy.gif', 'example.org/a.jpg', '',
+    'https://youtube.com.evil.com/watch?v=M7lc1UVf-VE', 'https://evil.com/youtube.com/watch?v=M7lc1UVf-VE',
+    'https://youtube.com@evil.com/watch?v=M7lc1UVf-VE', 'javascript:alert(1)//youtube.com/watch?v=M7lc1UVf-VE',
+  ];
+  for (const input of unchanged) equal(parseMediaLink(input), input, input);
+  throws(() => validate('contrib', [ID, 'A', 'B', '', parseMediaLink('javascript:alert(1)//youtube.com/watch?v=M7lc1UVf-VE')]), { code: 'invalid' });
+  // a page of these sites that is no single video or GIF
+  const unreadable = [
+    'https://www.youtube.com/@kanal', 'youtube.com/channel/UC1234', 'https://www.youtube.com/playlist?list=PL1',
+    'https://www.youtube.com/watch?v=short', 'https://youtu.be/', 'https://tenor.com/bZ8k1.gif',
+    'https://www.youtube.com/embed/videoseries?list=PL1', 'https://www.youtube.com/embed/live_stream?channel=UC1',
+    'https://tenor.com/search/birthday-gifs', 'https://giphy.com/', 'https://giphy.com/channel/someone', 'https://gph.is/g/abc',
+    'https://gph.is/abcdefg.gif',
+  ];
+  for (const input of unreadable) equal(parseMediaLink(input), null, input);
+});
+
+test('29 players and thumbnails come from the id alone; raw links typed before still play', () => {
+  deepEqual(mediaOf(`${YT}&t=90`), {
+    kind: 'youtube', id: 'M7lc1UVf-VE', start: 90, href: `${YT}&t=90`,
+    thumb: 'https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg',
+    embed: 'https://www.youtube-nocookie.com/embed/M7lc1UVf-VE?autoplay=1&start=90',
+  });
+  const raw = mediaOf('https://youtu.be/M7lc1UVf-VE?si=%22%3E%3Cb%3E&feature="x"&t=5');
+  deepEqual([raw.kind, raw.href, raw.thumb, raw.embed], ['youtube', `${YT}&t=5`, 'https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg', 'https://www.youtube-nocookie.com/embed/M7lc1UVf-VE?autoplay=1&start=5']);
+  deepEqual(mediaOf(TENOR), { kind: 'tenor', id: '10879878982515761105', href: TENOR, embed: 'https://tenor.com/embed/10879878982515761105' });
+  equal(mediaOf('https://tenor.com/view/party-gif-10879878982515761105?x=1').embed, 'https://tenor.com/embed/10879878982515761105');
+  deepEqual(mediaOf('https://giphy.com/gifs/party-oaGEZtx2Zs1OPSoHQi'), { kind: 'image', src: GIPHY });
+  for (const src of ['https://example.org/a.jpg', 'https://youtube.com.evil.com/watch?v=M7lc1UVf-VE', 'https://www.youtube.com/@kanal']) {
+    deepEqual(mediaOf(src), { kind: 'image', src }, src);
+  }
+  for (const img of ['', 'data:image/jpeg;base64,AAAA', sketchImg(fakeSketch(3)), 5]) equal(mediaOf(img), null, String(img));
+});
+
+test('30 media links travel through tokens and boards unchanged, origins included', async () => {
+  const media = [`${YT}&t=90`, TENOR, GIPHY];
+  const b = { ...board, contribs: media.map((img, i) => ({ name: `M${i}`, text: 't', sticker: '', img })) };
+  deepEqual(await decodeBoard(await encodeBoard(b)), posts(b));
+  for (const img of media) deepEqual(await decodeContrib(await encodeContrib({ ...contrib, img })), { ...contrib, img });
+  // a raw link typed before is not normalized on the way, so its origin stays
+  const old = { name: 'Alt', text: 't', sticker: '', img: 'https://youtu.be/M7lc1UVf-VE?si=abc' };
+  const back = (await decodeBoard(await encodeBoard({ ...board, contribs: [old] }))).contribs[0];
+  deepEqual(back, { ...old, origin: originOf(old) });
+});
+
+// A document with one media link, just enough for playInline().
+function mediaDoc(protocol) {
+  const listeners = [];
+  const doc = { location: { protocol }, activeElement: null, frames: [] };
+  doc.addEventListener = (type, fn) => listeners.push([type, fn]);
+  doc.createElement = (tag) => {
+    const e = { tagName: tag.toUpperCase(), focus: () => { doc.activeElement = e; } };
+    doc.frames.push(e);
+    return e;
+  };
+  const classes = new Set(['media', 'video']);
+  const link = {
+    className: 'media video', next: null,
+    dataset: { embed: 'https://www.youtube-nocookie.com/embed/M7lc1UVf-VE?autoplay=1', title: 'YouTube-Video' },
+    classList: { add: (c) => classes.add(c), has: (c) => classes.has(c) },
+    after: (f) => { link.next = f; },
+  };
+  // a.media[data-embed] and a.media[data-embed]:not(.played), as a browser matches them
+  const closest = (sel) => (/^a\.media\[data-embed\](:not\(\.played\))?$/.test(sel) && !(sel.includes(':not(.played)') && classes.has('played')) ? link : null);
+  const click = (o = {}) => {
+    let prevented = false;
+    const e = { target: { closest }, button: 0, ...o, preventDefault: () => { prevented = true; } };
+    for (const [type, fn] of listeners) if (type === 'click') fn(e);
+    return prevented;
+  };
+  return { doc, link, click, listeners };
+}
+
+test('31 playInline: a plain click on http(s) swaps the link for the player, nothing else does', () => {
+  const { doc, link, click } = mediaDoc('https:');
+  playInline(doc);
+  for (const o of [{ button: 1 }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }]) {
+    equal(click(o), false, JSON.stringify(o));
+  }
+  equal(doc.frames.length, 0, 'modified clicks open the link as usual');
+  equal(click(), true);
+  const [f] = doc.frames;
+  deepEqual(
+    [doc.frames.length, f.tagName, f.src, f.title, f.className, f.referrerPolicy, f.allowFullscreen, link.next === f, doc.activeElement === f, link.classList.has('played')],
+    [1, 'IFRAME', link.dataset.embed, 'YouTube-Video', 'media video', 'strict-origin-when-cross-origin', true, true, true, true],
+  );
+  ok(/(^|; )autoplay(;|$)/.test(f.allow) && f.allow.includes('fullscreen'), f.allow);
+  equal(click(), false, 'a played link is left alone');
+  equal(doc.frames.length, 1);
+  for (const protocol of ['file:', 'blob:', 'content:']) {
+    const local = mediaDoc(protocol);
+    playInline(local.doc);
+    equal(local.click(), false, protocol);
+    deepEqual([local.listeners.length, local.doc.frames.length], [0, 0], protocol);
+  }
+  // the app's CSP lets exactly these players in
+  const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(readFileSync(new URL('./index.html', import.meta.url), 'utf8'))[1];
+  ok(csp.split('; ').includes(`frame-src ${FRAME_SRC}`), csp);
 });

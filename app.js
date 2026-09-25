@@ -4,6 +4,7 @@
 // rendered through textContent / createElement, never through innerHTML.
 import * as codec from './codec.js';
 import { MAX_SIDE, encodeJpeg, ssim, strippedLength } from './jpeg.js';
+import { mediaOf, parseMediaLink, playInline } from './media.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -167,20 +168,45 @@ function bindThemeInputs(form, onInput) {
 
 const rotOf = (i) => (((i * 7) % 5) - 2) * 0.7;
 
+// A card's picture: photos, sketches and image links as <img>; a YouTube
+// video or a Tenor GIF as a link to it, which playInline() (media.js) turns
+// into the player. Tenor's player loads trackers, so it waits for the click.
+function renderMedia(img, doc) {
+  const m = mediaOf(img);
+  const pic = (src, loading = 'lazy') => {
+    const e = doc.createElement('img');
+    e.src = src;
+    e.alt = '';
+    e.loading = loading;
+    e.referrerPolicy = 'no-referrer';
+    return e;
+  };
+  if (!m || m.kind === 'image') return pic(m ? m.src : codec.imgSrc(img));
+  const a = doc.createElement('a');
+  a.className = m.kind === 'youtube' ? 'media video' : 'media gif-tenor';
+  a.href = m.href;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.dataset.embed = m.embed;
+  a.dataset.title = m.kind === 'youtube' ? 'YouTube-Video' : 'GIF von Tenor';
+  if (m.kind === 'youtube') {
+    const play = doc.createElement('span');
+    play.className = 'play';
+    play.textContent = '▶ Video ansehen';
+    a.append(pic(m.thumb, doc === document ? 'lazy' : 'eager'), play); // a built page may be printed unscrolled
+  } else {
+    a.textContent = 'GIF von Tenor laden (lädt Inhalte von Tenor/Google)';
+  }
+  return a;
+}
+
 // Same function for the live wall, the preview and the built static page.
 function renderCard(c, i, doc = document) {
   const card = doc.createElement('article');
   card.className = 'card';
   card.style.setProperty('--i', i);
   card.style.setProperty('--r', rotOf(i));
-  if (c.img) {
-    const img = doc.createElement('img');
-    img.src = codec.imgSrc(c.img);
-    img.alt = '';
-    img.loading = 'lazy';
-    img.referrerPolicy = 'no-referrer';
-    card.append(img);
-  }
+  if (c.img) card.append(renderMedia(c.img, doc));
   if (c.sticker) {
     const s = doc.createElement('span');
     s.className = 'sticker';
@@ -230,8 +256,17 @@ window.addEventListener('storage', (e) => {
   if ($('#dlg-merge').open) renderMergeList();
 });
 
+// A hidden player keeps playing: views and dialogs that close drop their
+// players, and the link to each comes back.
+function stopPlayers(root) {
+  for (const f of $$('iframe.media', root)) {
+    f.previousElementSibling?.classList.remove('played');
+    f.remove();
+  }
+}
 function show(id) {
   $$('main > section').forEach((s) => { s.hidden = s.id !== id; });
+  $$('main > section[hidden]').forEach(stopPlayers);
   $$('dialog[open]').forEach((d) => d.close());
   window.scrollTo(0, 0);
 }
@@ -490,7 +525,7 @@ function openCard(origin) {
   // a sticker the guest typed in is kept unless another one is picked
   if (c.sticker && !STICKERS.includes(c.sticker)) $('#card-stickers').dataset.keep = c.sticker;
   else delete $('#card-stickers').dataset.keep;
-  $('#card-photo').replaceChildren(c.img ? h('img', { src: codec.imgSrc(c.img), alt: '' }) : '');
+  $('#card-photo').replaceChildren(c.img ? renderMedia(c.img, document) : '');
   $('#card-nophoto').hidden = !c.img;
   updateMoveButtons(i);
   $('#dlg-card').showModal();
@@ -530,6 +565,7 @@ function moveCard(step) {
   updateMoveButtons(j);
 }
 cardForm.addEventListener('submit', (e) => { e.preventDefault(); $('#card-save').click(); }); // Enter in the name field
+$('#dlg-card').addEventListener('close', () => stopPlayers($('#dlg-card')));
 $('#card-earlier').onclick = () => moveCard(-1);
 $('#card-later').onclick = () => moveCard(1);
 $('#card-delete').onclick = async () => {
@@ -725,9 +761,10 @@ function currentContrib() {
     name: field(writeForm, 'name').value.trim(),
     text: field(writeForm, 'text').value.trim(),
     sticker: $('#sticker-row [aria-pressed="true"]')?.textContent ?? '',
-    img: write.photo ? write.photo.at(-1).img : field(writeForm, 'url').value.trim(),
+    img: write.photo ? write.photo.at(-1).img : parseMediaLink(field(writeForm, 'url').value), // null: no single video
   };
 }
+const NO_MEDIA = 'Dieser Link zeigt auf kein einzelnes Video oder GIF: Öffne es und teile dessen Link.';
 const messageFor = (name, link) => `Glückwunsch von ${name} für „${write.invite.title}“: ${link}`;
 // Encodes the contribution with the best photo version (write.photo, from
 // small to large) for which the whole message still fits MESSAGE_BUDGET. If
@@ -765,6 +802,11 @@ async function updateWrite() {
   write.error = '';
   $('#write-link').value = '';
   $('#size').textContent = '';
+  if (c.img === null) {
+    write.error = NO_MEDIA;
+    $('#size').textContent = NO_MEDIA;
+    return;
+  }
   if (!c.name || !c.text) return;
   const pending = (write.pending = fittedLink(c));
   try {
@@ -931,5 +973,6 @@ async function photoLadder(file, signal) {
 
 // ---- go ---------------------------------------------------------------------
 
+playInline(document);
 window.addEventListener('hashchange', route);
 route();

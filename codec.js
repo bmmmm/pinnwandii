@@ -181,7 +181,7 @@ function checkImg(img, wire) {
   const m = DATA_RE.exec(img);
   if (m && dataUriBytes(m[1]) <= LIMITS.photo) return;
   if (sketchBytes(img)) return;
-  fail('invalid', 'Bild muss ein https-Link oder ein kleines Foto sein.');
+  fail('invalid', `Bild, Video oder GIF: ein https-Link mit höchstens ${LIMITS.url} Zeichen oder ein kleines Foto.`);
 }
 function checkEntry(t, wire = false) {
   if (!Array.isArray(t) || t.length !== 4) fail('invalid', 'Beitrag: falscher Typ.');

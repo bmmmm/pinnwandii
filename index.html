@@ -5,8 +5,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- style-src allows inline styles because the "Vorschau" opens the built page as a blob: URL, and
-     blob: documents inherit this policy; the built page relies on its own <style> and style attributes. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src https: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+     blob: documents inherit this policy; the built page relies on its own <style> and style attributes.
+     Inline scripts stay blocked there, so the preview is always the print version without players.
+     frame-src: the YouTube and Tenor players (media.js), inserted only on a click. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src https: data:; frame-src https://www.youtube-nocookie.com https://tenor.com; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Pinnwand</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="style.css">
@@ -57,7 +59,8 @@
     <p class="count"><span id="count">0</span>/1000</p>
     <fieldset class="stickers"><legend>Sticker</legend><div class="sticker-row" id="sticker-row"></div></fieldset>
     <label class="button">Foto wählen <input type="file" name="photo" accept="image/*" hidden></label>
-    <label>oder Bild-Link <input type="url" name="url" placeholder="https://…" maxlength="500"></label>
+    <label>oder Link: YouTube, GIF oder Bild <input type="text" inputmode="url" name="url" placeholder="https://…" maxlength="2000" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <p class="hint">Videos zeigen ein Vorschaubild von YouTube und spielen beim Antippen. Tenor-GIFs laden erst beim Antippen, weil Tenor dabei Google-Tracking lädt; sofort sichtbar sind sie mit der GIF-Adresse (GIF lange drücken oder Rechtsklick → Bildadresse kopieren).</p>
     <p class="note" id="write-note"></p>
     <div class="wall preview" id="preview"></div>
     <p class="size" id="size"></p>
@@ -153,7 +156,7 @@
     <label>Gruß <textarea name="text" required maxlength="1000" rows="6"></textarea></label>
     <fieldset class="stickers"><legend>Sticker</legend><div class="sticker-row" id="card-stickers"></div></fieldset>
     <div id="card-photo"></div>
-    <label class="check" id="card-nophoto"><input type="checkbox" name="nophoto"> Foto entfernen</label>
+    <label class="check" id="card-nophoto"><input type="checkbox" name="nophoto"> Foto, Video oder GIF entfernen</label>
   </form>
   <div class="row">
     <button type="button" class="primary" id="card-save">Speichern</button>

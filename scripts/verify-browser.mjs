@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // End-to-end check of pinnwandii in headless Chromium: organizer, guest with
-// photo, merge, settings, finished page, viewer, mobile layout.
+// photo, merge, settings, finished page, viewer, mobile layout, videos and GIFs.
 //
 //   npm i --prefix <dir> puppeteer-core          # once, outside the repo
 //   PUPPETEER_DIR=<dir> node scripts/verify-browser.mjs
@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { decodeContrib, encodeBoard, encodeContrib, newId, originOf, toBase64 } from '../codec.js';
+import { decodeContrib, encodeBoard, encodeContrib, encodeInvite, newId, originOf, toBase64 } from '../codec.js';
 import { encodeJpeg } from '../jpeg.js';
 
 const require = createRequire(path.join(process.env.PUPPETEER_DIR ?? process.cwd(), 'x.js'));
@@ -22,6 +22,7 @@ const puppeteer = require('puppeteer-core');
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const LOCAL = !process.env.ORIGIN;
 const ORIGIN = (process.env.ORIGIN ?? 'http://localhost:8765').replace(/\/$/, '');
+const SITE = new URL(ORIGIN).origin;
 const OUT = process.env.OUT ?? fs.mkdtempSync(path.join(os.tmpdir(), 'pinnwandii-verify-'));
 const CHROME = process.env.CHROME ?? (() => {
   const base = path.join(os.homedir(), 'Library/Caches/ms-playwright');
@@ -42,22 +43,34 @@ const consoleLog = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const shot = (page, name) => page.screenshot({ path: path.join(OUT, 'shots', `${name}.png`) });
 const utf8 = (s) => Buffer.byteLength(s, 'utf8');
+// YouTube, Tenor and Giphy are stubbed in both modes: the check must not
+// depend on them, and no request leaves for any other outside host.
+const THUMB = Buffer.from(encodeJpeg(new Uint8Array(48 * 27 * 4).map((_, i) => (i % 4 === 3 ? 255 : 90 + (i % 7) * 20)), 48, 27, 60));
+const players = []; // { url, referer } of every player page requested
 async function newPage(ctx, label) {
   const page = await ctx.newPage();
   page.on('console', (m) => consoleLog.push(`[${label}] ${m.type()}: ${m.text()}`));
   page.on('pageerror', (e) => consoleLog.push(`[${label}] pageerror: ${e.message}`));
   page.on('requestfailed', (r) => consoleLog.push(`[${label}] requestfailed: ${r.url().split('#')[0]} ${r.failure()?.errorText}`));
-  if (LOCAL) {
-    await page.setRequestInterception(true);
-    page.on('request', (r) => {
-      const u = new URL(r.url());
-      if (u.origin !== ORIGIN) return r.continue();
-      if (failCssFetch && r.resourceType() === 'fetch' && u.pathname === '/style.css') return r.respond({ status: 404, body: 'not found' });
-      const file = path.join(REPO, u.pathname === '/' ? 'index.html' : decodeURIComponent(u.pathname));
-      if (!file.startsWith(REPO) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return r.respond({ status: 404, body: 'not found' });
-      r.respond({ status: 200, contentType: TYPES[path.extname(file)] ?? 'application/octet-stream', body: fs.readFileSync(file) });
-    });
-  }
+  await page.setRequestInterception(true);
+  page.on('request', (r) => {
+    const u = new URL(r.url());
+    if (!/^https?:$/.test(u.protocol)) return r.continue();
+    if (u.hostname === 'i.ytimg.com' || u.hostname === 'i.giphy.com') return r.respond({ status: 200, contentType: 'image/jpeg', body: THUMB });
+    if (u.hostname === 'www.youtube-nocookie.com' || u.hostname === 'tenor.com') {
+      players.push({ url: r.url(), referer: r.headers().referer ?? '' });
+      return r.respond({ status: 200, contentType: 'text/html', body: `<!doctype html><title>player</title><p>player ${u.pathname}</p>` });
+    }
+    if (u.origin !== SITE) {
+      consoleLog.push(`[${label}] outside request: ${r.url().slice(0, 100)}`);
+      return r.respond({ status: 404, body: 'not found' });
+    }
+    if (!LOCAL) return r.continue();
+    if (failCssFetch && r.resourceType() === 'fetch' && u.pathname === '/style.css') return r.respond({ status: 404, body: 'not found' });
+    const file = path.join(REPO, u.pathname === '/' ? 'index.html' : decodeURIComponent(u.pathname));
+    if (!file.startsWith(REPO) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return r.respond({ status: 404, body: 'not found' });
+    r.respond({ status: 200, contentType: TYPES[path.extname(file)] ?? 'application/octet-stream', body: fs.readFileSync(file) });
+  });
   await page.setViewport({ width: 1200, height: 900 });
   return page;
 }
@@ -405,7 +418,7 @@ try {
   check('6 html downloaded', fs.existsSync(htmlPath), htmlPath);
   const html = fs.readFileSync(htmlPath, 'utf8');
   check('6 html file: doctype, CSP meta, no <script, no edit buttons', html.startsWith('<!doctype html>') && html.includes('Content-Security-Policy') && !/<script/i.test(html) && !html.includes('class="edit"'));
-  const filePage = await org.newPage();
+  const filePage = await newPage(org, 'file');
   await filePage.goto(`file://${htmlPath}`, { waitUntil: 'load' });
   await waitFor(filePage, () => document.querySelector('.card img')?.complete).catch(() => {}); // lazy image
   check('6 file:// renders 4 cards with the photo', await filePage.evaluate(() => document.querySelectorAll('.card').length === 4 && document.querySelector('.card img[src^="data:image/jpeg"]')?.naturalWidth > 0 && getComputedStyle(document.querySelector('.card')).borderRadius !== '0px'));
@@ -647,6 +660,123 @@ try {
   check('14 deletions from a file: "Löschen" deletes and says so', n2 === 2 && del.includes('1 gelöscht'), del);
   await cp2.close();
 
+  // ---- 15. videos and GIFs: guests send links, the wall plays them on a click -------------
+  const med = { id: newId(), title: 'Mit Videos', preset: 'd', hue: 250, contribs: [], deleted: [] };
+  const YT_EMBED = 'https://www.youtube-nocookie.com/embed/M7lc1UVf-VE?autoplay=1&start=90';
+  const TENOR_EMBED = 'https://tenor.com/embed/10879878982515761105';
+  const mgCtx = await browser.createBrowserContext();
+  const mg = await newPage(mgCtx, 'media-guest');
+  await mg.goto(`${ORIGIN}/#i=${await encodeInvite(med)}`, { waitUntil: 'networkidle0' });
+  await mg.evaluate(() => { navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve(); }; });
+  const guestSends = async (name, url) => {
+    await setValue(mg, '#write-form input[name=name]', name);
+    await setValue(mg, '#write-form textarea[name=text]', `Gruß von ${name}`);
+    await setValue(mg, '#write-form input[name=url]', url);
+    await mg.evaluate(() => { window.__copied = null; });
+    await mg.$eval('#copy-link', (b) => b.click());
+    await waitFor(mg, () => typeof window.__copied === 'string');
+    return mg.evaluate(() => window.__copied);
+  };
+  const ytMsg = await guestSends('Vera', 'https://youtu.be/M7lc1UVf-VE?si=x&t=1m30s');
+  const ytSent = await decodeContrib(tokenOf(ytMsg));
+  check('15 YouTube link: sent as the canonical URL with its start, one message', ytSent.img === 'https://www.youtube.com/watch?v=M7lc1UVf-VE&t=90' && utf8(ytMsg) <= BUDGET, `${ytSent.img}, ${utf8(ytMsg)} bytes`);
+  await waitFor(mg, () => document.querySelector('#preview .card a.media.video img')?.complete).catch(() => {});
+  check('15 write preview shows the video thumbnail', await mg.evaluate(() => document.querySelector('#preview .card a.media.video img[src="https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg"]')?.naturalWidth > 0));
+  const giphySent = await decodeContrib(tokenOf(await guestSends('Gil', 'https://giphy.com/gifs/celebrate-birthday-happy-oaGEZtx2Zs1OPSoHQi')));
+  const tenorSent = await decodeContrib(tokenOf(await guestSends('Tia', 'tenor.com/de/view/birthday-gif-10879878982515761105')));
+  check('15 Giphy and Tenor page links: sent canonical', giphySent.img === 'https://i.giphy.com/media/oaGEZtx2Zs1OPSoHQi/giphy.webp' && tenorSent.img === 'https://tenor.com/view/10879878982515761105', `${giphySent.img} ${tenorSent.img}`);
+  await setValue(mg, '#write-form input[name=url]', 'youtube.com/@kanal');
+  await mg.evaluate(() => { window.__copied = null; });
+  await mg.$eval('#copy-link', (b) => b.click());
+  await sleep(300);
+  const chanSize = await text(mg, '#size');
+  check('15 a channel link: error line and toast, nothing copied', chanSize.includes('kein einzelnes Video') && (await text(mg, '#toast')) === chanSize && await mg.evaluate(() => window.__copied === null && !document.querySelector('#write-link').value), chanSize);
+  await mg.close();
+  // the organizer collects them, plus a raw YouTube link typed before this version
+  const oldRaw = `${ORIGIN}/#c=${await encodeContrib({ id: med.id, name: 'Olaf', text: 'Alter Link', sticker: '', img: 'https://youtu.be/M7lc1UVf-VE' })}`;
+  const mCtx = await browser.createBrowserContext();
+  const mp = await newPage(mCtx, 'media');
+  await mp.goto(`${ORIGIN}/#b=${await encodeBoard(med)}`, { waitUntil: 'networkidle0' });
+  await waitFor(mp, (id) => location.hash === `#o=${id}`, med.id);
+  await mp.click('#toolbar [data-act=merge]');
+  await waitFor(mp, () => document.querySelector('#dlg-merge').open);
+  await setValue(mp, '#merge-text', [ytMsg, `Gil: ${ORIGIN}/#c=${await encodeContrib(giphySent)}`, `Tia: ${ORIGIN}/#c=${await encodeContrib(tenorSent)}`, oldRaw].join('\n'));
+  await mp.click('#merge-go');
+  await waitFor(mp, () => document.querySelector('#merge-result').textContent.length > 0);
+  await mp.click('#dlg-merge [data-close]');
+  await waitFor(mp, () => [...document.querySelectorAll('#wall img')].every((i) => i.complete));
+  const wallMedia = await mp.evaluate(() => [...document.querySelectorAll('#wall .card')].map((c) => {
+    const a = c.querySelector('a.media');
+    const img = c.querySelector('img');
+    return [c.querySelector('.name').textContent, a?.className ?? '', a?.dataset.embed ?? '', img?.naturalWidth > 0 ? img.src : '', a?.textContent ?? ''];
+  }));
+  const wantMedia = [
+    ['Vera', 'media video', YT_EMBED, 'https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg', '▶ Video ansehen'],
+    ['Gil', '', '', 'https://i.giphy.com/media/oaGEZtx2Zs1OPSoHQi/giphy.webp', ''],
+    ['Tia', 'media gif-tenor', TENOR_EMBED, '', 'GIF von Tenor laden (lädt Inhalte von Tenor/Google)'],
+    ['Olaf', 'media video', 'https://www.youtube-nocookie.com/embed/M7lc1UVf-VE?autoplay=1', 'https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg', '▶ Video ansehen'],
+  ];
+  check('15 wall: thumbnail links for videos (old raw link too), Giphy drawn, Tenor placeholder', JSON.stringify(wallMedia) === JSON.stringify(wantMedia), JSON.stringify(wallMedia));
+  // the organizer's card dialog shows them the same way
+  const dialogPreview = async (n) => {
+    await mp.$eval(`#wall .card:nth-child(${n}) button.edit`, (b) => b.click());
+    await waitFor(mp, () => document.querySelector('#dlg-card').open);
+    await waitFor(mp, () => [...document.querySelectorAll('#card-photo img')].every((i) => i.complete)).catch(() => {});
+    const r = await mp.evaluate(() => [document.querySelector('#card-photo a.media')?.className ?? '', document.querySelector('#card-photo img')?.naturalWidth > 0 ? document.querySelector('#card-photo img').src : '']);
+    await mp.$eval('#dlg-card [data-close]', (b) => b.click());
+    return r;
+  };
+  const dialogMedia = JSON.stringify([await dialogPreview(1), await dialogPreview(3)]);
+  check('15 card dialog: video thumbnail and Tenor placeholder as on the wall', dialogMedia === JSON.stringify([['media video', 'https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg'], ['media gif-tenor', '']]), dialogMedia);
+  check('15 no player loaded before a click', players.length === 0, JSON.stringify(players));
+  await shot(mp, '15-media');
+  await mp.bringToFront();
+  await mp.click('#wall .card:nth-child(1) a.media');
+  await waitFor(mp, () => !!document.querySelector('#wall iframe'));
+  const played = await mp.evaluate(() => {
+    const f = document.querySelector('#wall .card:nth-child(1) iframe');
+    return { src: f?.src, title: f?.title, focused: document.activeElement === f, linkHidden: getComputedStyle(document.querySelector('#wall .card:nth-child(1) a.media')).display === 'none', w: f?.offsetWidth, h: f?.offsetHeight }; // offset*: the card is rotated
+  });
+  await sleep(300);
+  const ytReq = players.find((p) => p.url === YT_EMBED);
+  check('15 click: player with start, focused, link hidden, 16:9', played.src === YT_EMBED && played.title === 'YouTube-Video' && played.focused && played.linkHidden && Math.abs(played.w / played.h - 16 / 9) < 0.02, JSON.stringify(played));
+  check('15 player request carries the page origin as Referer (YouTube refuses without)', ytReq?.referer === `${SITE}/`, JSON.stringify(players));
+  await mp.emulateMediaType('print');
+  const printed = await mp.evaluate(() => [getComputedStyle(document.querySelector('#wall iframe')).display, getComputedStyle(document.querySelector('#wall .card:nth-child(1) a.media')).display]);
+  await mp.emulateMediaType(null);
+  check('15 print: player hidden, thumbnail shown', printed[0] === 'none' && printed[1] === 'block', printed.join());
+  await mp.click('#wall .card:nth-child(3) a.media');
+  await waitFor(mp, () => !!document.querySelector('#wall .card:nth-child(3) iframe'));
+  const tenorFrame = await mp.evaluate(() => { const f = document.querySelector('#wall .card:nth-child(3) iframe'); return [f.src, f.title, f.offsetWidth - f.offsetHeight]; });
+  await sleep(300);
+  check('15 Tenor: player only after the click, square', tenorFrame[0] === TENOR_EMBED && tenorFrame[1] === 'GIF von Tenor' && Math.abs(tenorFrame[2]) <= 1 && players.some((p) => p.url === TENOR_EMBED), JSON.stringify(tenorFrame));
+  await shot(mp, '15-played');
+  // the print version (finished page without scripts) keeps the thumbnail links
+  await bcdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: path.join(OUT, 'downloads'), browserContextId: mCtx.id, eventsEnabled: true });
+  await mp.click('#toolbar [data-act=build]');
+  await waitFor(mp, () => document.querySelector('#dlg-build').open);
+  await mp.click('#build-download');
+  const medHtml = path.join(OUT, 'downloads', `pinnwand-${med.id}.html`);
+  for (let i = 0; i < 50 && !fs.existsSync(medHtml); i++) await sleep(100);
+  const mh = fs.existsSync(medHtml) ? fs.readFileSync(medHtml, 'utf8') : '';
+  const thumbs = mh.match(/<img [^>]*hqdefault[^>]*>/g) ?? [];
+  check('15 print version: thumbnail links loaded eagerly (printing), no <iframe, no <script', (mh.match(/class="media video"/g) ?? []).length === 2 && thumbs.length === 2 && thumbs.every((t) => t.includes('loading="eager"')) && mh.includes('class="media gif-tenor"') && !/<iframe|<script/i.test(mh), `${mh.length} chars, ${thumbs.join(' ')}`);
+  await mp.click('#dlg-build [data-close]');
+  // a hidden player would keep playing: closing its dialog or leaving its view drops it
+  await mp.$eval('#wall .card:nth-child(1) button.edit', (b) => b.click());
+  await waitFor(mp, () => document.querySelector('#dlg-card').open);
+  await mp.$eval('#card-photo a.media', (a) => a.click());
+  await waitFor(mp, () => !!document.querySelector('#card-photo iframe'));
+  await mp.$eval('#dlg-card [data-close]', (b) => b.click());
+  await waitFor(mp, () => !document.querySelector('#dlg-card iframe'), null, 1000).catch(() => {}); // "close" fires as a task
+  const inDialog = await mp.evaluate(() => document.querySelectorAll('#dlg-card iframe').length);
+  const onWall = await mp.evaluate(() => document.querySelectorAll('#wall iframe').length);
+  await mp.evaluate(() => { location.hash = ''; });
+  await waitFor(mp, () => !document.querySelector('#view-start').hidden);
+  const left = await mp.evaluate(() => [document.querySelectorAll('iframe').length, document.querySelectorAll('a.media.played').length]);
+  check('15 closing the dialog or leaving the wall stops its players', inDialog === 0 && onWall === 2 && left.join() === '0,0', `dialog ${inDialog}, wall before ${onWall}, after ${left}`);
+  await mp.close();
+
   // ---- start page lists saved boards -------------------------------------------------------
   await page.bringToFront();
   await page.goto(`${ORIGIN}/`, { waitUntil: 'networkidle0' });
@@ -656,8 +786,8 @@ try {
 } finally {
   // ---- 8. console --------------------------------------------------------------------------
   // [css404] provokes its 404 on purpose
-  const bad = consoleLog.filter((l) => !l.startsWith('[css404]') && /CSP|Refused|Error|error|pageerror|requestfailed/.test(l));
-  check('8 console clean (CSP|Refused|Error)', bad.length === 0, bad.join(' | ').slice(0, 800));
+  const bad = consoleLog.filter((l) => !l.startsWith('[css404]') && /CSP|Refused|Error|error|pageerror|requestfailed|outside request/.test(l));
+  check('8 console clean (CSP|Refused|Error|outside request)', bad.length === 0, bad.join(' | ').slice(0, 800));
   await browser.close();
   const fails = results.filter(([ok]) => !ok).length;
   console.log(`\n${results.length - fails}/${results.length} checks passed · output in ${OUT}`);
