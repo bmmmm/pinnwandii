@@ -597,10 +597,25 @@ try {
   await cp.$eval('#card-stickers button:nth-child(3)', (b) => b.click());
   await cp.$eval('#card-save', (b) => b.click());
   await openCard('Anna');
-  const photoShown = await visible(cp, '#card-nophoto');
-  const boxWidth = await cp.$eval('#card-form input[name=nophoto]', (b) => b.getBoundingClientRect().width);
-  await cp.$eval('#card-form input[name=nophoto]', (b) => b.click());
+  const photoShown = await cp.evaluate(() => !!document.querySelector('#card-media img[src^="data:image/jpeg"]')) && await visible(cp, '#card-nomedia');
+  await cp.$eval('#card-nomedia', (b) => b.click());
+  const cleared = await cp.evaluate(() => document.querySelector('#card-media').children.length === 0 && document.querySelector('#card-nomedia').hidden);
   await cp.$eval('#card-save', (b) => b.click());
+  // a photo added in the dialog: saving right away waits for it
+  await openCard('Ben');
+  await (await cp.$('#card-form input[name=photo]')).uploadFile(images.jpg);
+  await cp.$eval('#card-save', (b) => b.click());
+  await waitFor(cp, () => !document.querySelector('#dlg-card').open, null, 20000).catch(() => cp.$eval('#dlg-card [data-close]', (b) => b.click()));
+  const benPhoto = await cp.evaluate(() => [...document.querySelectorAll('#wall .card')].find((c) => c.querySelector('.name').textContent === 'Ben')?.querySelector('img')?.src ?? '');
+  check('14 card dialog: a photo added and saved at once is saved with the card', isPhoto(benPhoto) && photoBytes(benPhoto) > 500, `${benPhoto.slice(0, 40)} ${isPhoto(benPhoto) ? photoBytes(benPhoto) + ' B' : ''}`);
+  // ... and replaced by a video link
+  await openCard('Ben');
+  const hadPhoto = await cp.evaluate(() => !!document.querySelector('#card-media img[src^="data:image/jpeg"]'));
+  await setValue(cp, '#card-form input[name=url]', 'https://www.youtube.com/watch?v=M7lc1UVf-VE&feature=share');
+  await waitFor(cp, () => document.querySelector('#card-media a.media.video img')?.complete).catch(() => {});
+  const videoPreview = await cp.evaluate(() => document.querySelector('#card-media a.media.video img')?.naturalWidth > 0);
+  await cp.$eval('#card-save', (b) => b.click());
+  check('14 card dialog: the photo shows, a video link replaces it with a thumbnail', hadPhoto && videoPreview, `photo ${hadPhoto}, thumbnail ${videoPreview}`);
   await openCard('Dora');
   await cp.$eval('#card-earlier', (b) => b.click());
   await cp.$eval('#card-earlier', (b) => b.click()); // twice: Dora ends up before Ben
@@ -614,13 +629,21 @@ try {
   await setValue(cp, '#card-form input[name=name]', 'Anna M.');
   await cp.focus('#card-form input[name=name]');
   await cp.keyboard.press('Enter');
+  await waitFor(cp, () => !document.querySelector('#dlg-card').open).catch(() => cp.$eval('#dlg-card [data-close]', (b) => b.click()));
+  // the organizer writes a card of their own
+  await cp.click('#toolbar [data-act=write]');
+  await waitFor(cp, () => document.querySelector('#dlg-card').open);
+  const newDialog = await cp.evaluate(() => [document.querySelector('#card-heading').textContent, ...['name', 'text', 'url'].map((n) => document.querySelector(`#card-form [name=${n}]`).value), ...['#card-earlier', '#card-later', '#card-delete', '#card-nomedia'].map((s) => document.querySelector(s).hidden), document.querySelectorAll('#card-stickers [aria-pressed="true"]').length].join());
+  check('14 "Karte schreiben": empty dialog without move and delete', newDialog === 'Karte schreiben,,,,true,true,true,true,0', newDialog);
+  await setValue(cp, '#card-form input[name=name]', 'Orga');
+  await setValue(cp, '#card-form textarea[name=text]', 'Von uns allen');
+  await cp.$eval('#card-save', (b) => b.click());
   await waitFor(cp, () => !document.querySelector('#dlg-card').open);
-  const wallState = () => cp.$$eval('#wall .card', (cs) => cs.map((c) => [c.querySelector('.name').textContent, c.querySelector('.text').textContent, c.querySelector('.sticker')?.textContent ?? '', !!c.querySelector('img')]));
-  const expected = JSON.stringify([['Anna M.', 'Gruß von Anna', '', false], ['Dora', 'Gruß von Dora', '', false], ['Ben', 'Gruß von Ben, korrigiert', '🎈', false]]);
+  const wallState = () => cp.$$eval('#wall .card', (cs) => cs.map((c) => [c.querySelector('.name').textContent, c.querySelector('.text').textContent, c.querySelector('.sticker')?.textContent ?? '', c.querySelector('a.media.video') ? 'video' : c.querySelector('img') ? 'img' : '']));
+  const expected = JSON.stringify([['Anna M.', 'Gruß von Anna', '', ''], ['Dora', 'Gruß von Dora', '', ''], ['Ben', 'Gruß von Ben, korrigiert', '🎈', 'video'], ['Orga', 'Von uns allen', '', '']]);
   const afterEdit = JSON.stringify(await wallState());
   await shot(cp, '14-curated');
-  check('14 edit text + sticker, remove photo, move, delete, Enter saves', photoShown && afterEdit === expected, afterEdit);
-  check('14 "Foto entfernen" is a plain checkbox, not a stretched field', boxWidth > 0 && boxWidth < 40, `${boxWidth}px`);
+  check('14 edit text + sticker, remove photo, add video, move, delete, own card, Enter saves', photoShown && cleared && afterEdit === expected, afterEdit);
   check('14 curated board is stored with origins and deletions', (await storedShape()).startsWith('6,'), await storedShape());
   const again = await pasteChat();
   const afterMerge = JSON.stringify(await wallState());
@@ -641,7 +664,7 @@ try {
   await cp2.click('#merge-go');
   await waitFor(cp2, () => document.querySelector('#merge-result').textContent.length > 0);
   const r2dev = await text(cp2, '#merge-result');
-  check('14 second device via admin link: the deletion travels along', r2dev === '0 übernommen, 4 doppelt, 0 fremde Pinnwand, 0 defekt' && (await cardCount(cp2)) === 3, r2dev);
+  check('14 second device via admin link: the deletion and the own card travel along', r2dev === '0 übernommen, 4 doppelt, 0 fremde Pinnwand, 0 defekt' && (await cardCount(cp2)) === 4, r2dev);
   // a file that deletes a post (crafted or from another device) asks first
   const killer = JSON.stringify([cur.id, 'x', 'p', 1, [], [originOf({ name: 'Dora', text: 'Gruß von Dora', sticker: '', img: '' })]]);
   const pasteKiller = async (answer) => {
@@ -655,9 +678,9 @@ try {
     return [q, await text(cp2, '#merge-result'), await cardCount(cp2)];
   };
   const [q1, keep, n1] = await pasteKiller('#confirm-cancel');
-  check('14 deletions from a file: asked by name, "Abbrechen" keeps the card', q1.includes('Dora') && n1 === 3 && !keep.includes('gelöscht'), `${q1} → ${keep}`);
+  check('14 deletions from a file: asked by name, "Abbrechen" keeps the card', q1.includes('Dora') && n1 === 4 && !keep.includes('gelöscht'), `${q1} → ${keep}`);
   const [, del, n2] = await pasteKiller('#confirm-ok');
-  check('14 deletions from a file: "Löschen" deletes and says so', n2 === 2 && del.includes('1 gelöscht'), del);
+  check('14 deletions from a file: "Löschen" deletes and says so', n2 === 3 && del.includes('1 gelöscht'), del);
   await cp2.close();
 
   // ---- 15. videos and GIFs: guests send links, the wall plays them on a click -------------
@@ -721,8 +744,8 @@ try {
   const dialogPreview = async (n) => {
     await mp.$eval(`#wall .card:nth-child(${n}) button.edit`, (b) => b.click());
     await waitFor(mp, () => document.querySelector('#dlg-card').open);
-    await waitFor(mp, () => [...document.querySelectorAll('#card-photo img')].every((i) => i.complete)).catch(() => {});
-    const r = await mp.evaluate(() => [document.querySelector('#card-photo a.media')?.className ?? '', document.querySelector('#card-photo img')?.naturalWidth > 0 ? document.querySelector('#card-photo img').src : '']);
+    await waitFor(mp, () => [...document.querySelectorAll('#card-media img')].every((i) => i.complete)).catch(() => {});
+    const r = await mp.evaluate(() => [document.querySelector('#card-media a.media')?.className ?? '', document.querySelector('#card-media img')?.naturalWidth > 0 ? document.querySelector('#card-media img').src : '']);
     await mp.$eval('#dlg-card [data-close]', (b) => b.click());
     return r;
   };
@@ -765,8 +788,8 @@ try {
   // a hidden player would keep playing: closing its dialog or leaving its view drops it
   await mp.$eval('#wall .card:nth-child(1) button.edit', (b) => b.click());
   await waitFor(mp, () => document.querySelector('#dlg-card').open);
-  await mp.$eval('#card-photo a.media', (a) => a.click());
-  await waitFor(mp, () => !!document.querySelector('#card-photo iframe'));
+  await mp.$eval('#card-media a.media', (a) => a.click());
+  await waitFor(mp, () => !!document.querySelector('#card-media iframe'));
   await mp.$eval('#dlg-card [data-close]', (b) => b.click());
   await waitFor(mp, () => !document.querySelector('#dlg-card iframe'), null, 1000).catch(() => {}); // "close" fires as a task
   const inDialog = await mp.evaluate(() => document.querySelectorAll('#dlg-card iframe').length);

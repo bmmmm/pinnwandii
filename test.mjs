@@ -3,9 +3,9 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { deepEqual, equal, ok, rejects, throws } from 'node:assert/strict';
+import { deepEqual, equal, notEqual, ok, rejects, throws } from 'node:assert/strict';
 import {
-  LIMITS, addContrib, decodeBoard, decodeContrib, decodeInvite, encodeBoard,
+  LIMITS, addContrib, addOwnPost, decodeBoard, decodeContrib, decodeInvite, encodeBoard,
   encodeContrib, encodeInvite, extractContribs, fromBase64, fromBase64url, imgSrc,
   deletePost, deletedIn, mergeBoard, mergeContribs, mergeText, originOf, pack, parseBackup, sketchImg, toBase64, toBase64url, toTuple, unpack, validate,
 } from './codec.js';
@@ -605,4 +605,29 @@ test('31 playInline: a plain click on http(s) swaps the link for the player, not
   // the app's CSP lets exactly these players in
   const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(readFileSync(new URL('./index.html', import.meta.url), 'utf8'))[1];
   ok(csp.split('; ').includes(`frame-src ${FRAME_SRC}`), csp);
+});
+
+test('32 own cards get a random origin: written again after a delete they are new, not duplicates', async () => {
+  const b = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [] };
+  const own = { name: 'Orga', text: 'Von uns allen', sticker: '🎉', img: YT };
+  equal(addOwnPost(b, own), 'added');
+  const first = b.contribs[0].origin;
+  ok(/^[A-Za-z0-9_-]{8}$/.test(first) && first !== originOf(own), first);
+  deletePost(b, first);
+  equal(addOwnPost(b, own), 'added', 'the same card again');
+  notEqual(b.contribs[0].origin, first);
+  deepEqual(b.contribs.map(({ origin, ...c }) => c), [own]);
+  // the random origin travels with the board through storage and the admin link
+  deepEqual(await decodeBoard(await encodeBoard(b)), b);
+  deepEqual(validate('board', JSON.parse(JSON.stringify(toTuple('board', b)))), b);
+  const full = { ...b, contribs: Array.from({ length: LIMITS.contribs }, (_, i) => ({ name: `P${i}`, text: 'x', sticker: '', img: '', origin: `p${String(i).padStart(7, '0')}` })) };
+  equal(addOwnPost(full, own), 'full');
+  equal(full.contribs.length, LIMITS.contribs);
+  // a guest's post whose photo the organizer replaced by a video is still a duplicate of its link
+  const tok = await encodeContrib({ ...contrib, img: photo(randomBytes(900, 6)) });
+  const g = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [] };
+  await mergeContribs(g, [tok]);
+  g.contribs[0].img = YT;
+  deepEqual(await mergeContribs(g, [tok]), { added: 0, dupes: 1, foreign: 0, broken: 0, full: 0 });
+  deepEqual(g.contribs.map((e) => e.img), [YT]);
 });

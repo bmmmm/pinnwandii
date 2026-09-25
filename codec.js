@@ -22,7 +22,9 @@
 // Origin: every post on a board remembers a short hash of the contribution
 // it came from, and a board remembers the origins of deleted posts. Merging
 // the same links or an older backup again therefore neither duplicates an
-// edited post nor brings back a deleted one.
+// edited post nor brings back a deleted one. A post the organizer writes
+// comes from no link and gets a random origin instead: a hash would turn
+// the same text written again after a deletion into a duplicate.
 import { stripJpeg, unstripJpeg } from './jpeg.js';
 import { MAX_BYTES as SKETCH_BYTES, isSketch, sketchSvg } from './sketch.js';
 
@@ -254,6 +256,8 @@ export function toTuple(kind, o) {
 export function newId() {
   return toBase64url(crypto.getRandomValues(new Uint8Array(6))).slice(0, 6);
 }
+/** A random origin (8 characters, like a hashed one) for a post the organizer writes. */
+export const newOrigin = () => toBase64url(crypto.getRandomValues(new Uint8Array(6)));
 
 /** Origin of a contribution: 48-bit hash (cyrb53) of its content, 8 characters. */
 export function originOf(c) {
@@ -373,6 +377,9 @@ export function addContrib(board, c) {
   if (c.id !== board.id) return 'foreign';
   return addPost(board, { ...c, origin: originOf(c) });
 }
+
+/** Adds a post the organizer wrote, with a random origin; returns 'added' | 'full'. */
+export const addOwnPost = (board, e) => addPost(board, { ...e, origin: newOrigin() });
 
 /** Records a post as deleted, so that merging it again does not bring it back. */
 export function deletePost(board, origin) {

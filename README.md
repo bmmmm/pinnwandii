@@ -36,7 +36,9 @@ Three roles, one static page:
    whole chat export, read the clipboard or drop the files. Duplicates,
    foreign pinboards and truncated links are counted, not merged. Every
    card has an edit button (✎): correct name or text, change the sticker,
-   remove the photo, move the card, delete it. Then *Fertige Seite* builds
+   add or replace the photo, set a video or GIF link, remove the picture,
+   move the card, delete it. *Karte schreiben* adds a card of the
+   organizer's own. Then *Fertige Seite* builds
    the finished pinboard: one HTML file without JavaScript, photos
    embedded.
 
@@ -45,7 +47,8 @@ invitation link never reveals who has already replied. Each card remembers
 which contribution it came from (a short hash), and the board remembers
 deleted ones: pasting the same chat again, or merging an older backup or
 admin link, neither brings a deleted card back nor adds an edited one
-twice. Deletions made on another device travel with its admin link or
+twice. A card the organizer writes comes from no link and gets a random
+origin, so the same card written again after a deletion is new. Deletions made on another device travel with its admin link or
 backup, after the app asks (with the names) whether to delete here too;
 where both devices edited the same card, the device you merge into keeps
 its version. A board nobody curated is stored exactly as before version 3,

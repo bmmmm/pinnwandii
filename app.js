@@ -17,6 +17,7 @@ const plural = (n) => (n === 1 ? '1 Beitrag' : `${n} Beiträge`);
 const SAVE_FAILED = 'Speichern nicht möglich: Speicher voll oder gesperrt. Lade eine Sicherung herunter.';
 const fullNote = (n) => (n ? ` ${n} nicht übernommen: Pinnwand voll (höchstens ${codec.LIMITS.contribs}).` : '');
 const removedNote = (n) => (n ? `, ${n} gelöscht` : '');
+const NO_MEDIA = 'Dieser Link zeigt auf kein einzelnes Video oder GIF: Öffne es und teile dessen Link.';
 
 // Merges another copy of a board (backup, admin link). Posts deleted there
 // are only deleted here after asking: a crafted file could otherwise make
@@ -181,7 +182,8 @@ function renderMedia(img, doc) {
     e.referrerPolicy = 'no-referrer';
     return e;
   };
-  if (!m || m.kind === 'image') return pic(m ? m.src : codec.imgSrc(img));
+  if (m?.kind === 'image') return pic(m.src);
+  if (!m) return img && codec.imgSrc(img).startsWith('data:') ? pic(codec.imgSrc(img)) : null; // null: a link still being typed
   const a = doc.createElement('a');
   a.className = m.kind === 'youtube' ? 'media video' : 'media gif-tenor';
   a.href = m.href;
@@ -206,7 +208,8 @@ function renderCard(c, i, doc = document) {
   card.className = 'card';
   card.style.setProperty('--i', i);
   card.style.setProperty('--r', rotOf(i));
-  if (c.img) card.append(renderMedia(c.img, doc));
+  const media = c.img && renderMedia(c.img, doc);
+  if (media) card.append(media);
   if (c.sticker) {
     const s = doc.createElement('span');
     s.className = 'sticker';
@@ -439,6 +442,7 @@ $('#toolbar').addEventListener('click', (e) => {
   if (act === 'merge') openMerge();
   if (act === 'build') openBuild();
   if (act === 'settings') openSettings();
+  if (act === 'write') openNewCard();
 });
 
 // ---- share dialog -----------------------------------------------------------
@@ -492,9 +496,12 @@ async function removeContrib(origin) {
   return true;
 }
 
-// ---- card dialog: curate one post ---------------------------------------------
+// ---- card dialog: curate one post, or write one --------------------------------
 
-let cardFor = null; // origin of the post being edited
+// While the dialog is open: the post's origin (null for a new card), its
+// picture as it would be saved (null while the link names no single video or
+// GIF), and a photo still being prepared.
+let card = null; // { origin, img, abort, shrinking }
 function stickerRow(row, selected, onChange) {
   row.replaceChildren(...STICKERS.map((s) => {
     const b = h('button', { type: 'button', textContent: s });
@@ -511,49 +518,105 @@ function stickerRow(row, selected, onChange) {
 const cardForm = $('#card-form');
 function cardIndex() {
   reloadCurrent();
-  return current ? current.contribs.findIndex((e) => e.origin === cardFor) : -1;
+  return current && card?.origin ? current.contribs.findIndex((e) => e.origin === card.origin) : -1;
 }
-function openCard(origin) {
-  cardFor = origin;
-  const i = cardIndex();
-  if (i < 0) return;
-  const c = current.contribs[i];
+function openCardDialog(c, origin) {
+  card?.abort?.abort();
+  card = { origin, img: c.img, abort: null, shrinking: null };
+  $('#card-heading').textContent = origin ? 'Beitrag bearbeiten' : 'Karte schreiben';
   field(cardForm, 'name').value = c.name;
   field(cardForm, 'text').value = c.text;
-  field(cardForm, 'nophoto').checked = false;
+  field(cardForm, 'url').value = c.img.startsWith('https://') ? c.img : '';
   stickerRow($('#card-stickers'), c.sticker);
   // a sticker the guest typed in is kept unless another one is picked
   if (c.sticker && !STICKERS.includes(c.sticker)) $('#card-stickers').dataset.keep = c.sticker;
   else delete $('#card-stickers').dataset.keep;
-  $('#card-photo').replaceChildren(c.img ? renderMedia(c.img, document) : '');
-  $('#card-nophoto').hidden = !c.img;
-  updateMoveButtons(i);
+  $('#card-note').textContent = '';
+  showCardMedia();
+  for (const b of ['#card-earlier', '#card-later', '#card-delete']) $(b).hidden = !origin;
+  if (origin) updateMoveButtons(cardIndex());
   $('#dlg-card').showModal();
+}
+function openCard(origin) {
+  reloadCurrent();
+  const c = current?.contribs.find((e) => e.origin === origin);
+  if (c) openCardDialog(c, origin);
+}
+const openNewCard = () => openCardDialog({ name: '', text: '', sticker: '', img: '' }, null);
+function showCardMedia() {
+  $('#card-media').replaceChildren((card.img && renderMedia(card.img, document)) || '');
+  $('#card-nomedia').hidden = !card.img && !field(cardForm, 'url').value;
+  if (card.img === null) $('#card-note').textContent = NO_MEDIA;
 }
 function updateMoveButtons(i) {
   $('#card-earlier').disabled = i <= 0;
   $('#card-later').disabled = i < 0 || i >= current.contribs.length - 1;
 }
-$('#card-save').onclick = () => {
-  const i = cardIndex();
-  if (i < 0) return $('#dlg-card').close();
-  const c = current.contribs[i];
+// A photo or a link replaces the picture; a photo still being prepared is dropped.
+function setCardMedia(img, url) {
+  card.abort?.abort();
+  card.shrinking = null;
+  card.img = img;
+  field(cardForm, 'url').value = url;
+  $('#card-note').textContent = '';
+  showCardMedia();
+}
+field(cardForm, 'url').addEventListener('input', (e) => setCardMedia(parseMediaLink(e.target.value), e.target.value));
+$('#card-nomedia').onclick = () => setCardMedia('', '');
+field(cardForm, 'photo').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file || !card) return;
+  const state = card;
+  state.abort?.abort();
+  const abort = (state.abort = new AbortController());
+  const shrinking = (state.shrinking = photoLadder(file, abort.signal));
+  $('#card-note').textContent = 'Foto wird umgewandelt …';
+  try {
+    const ladder = await shrinking;
+    if (card !== state || state.shrinking !== shrinking) return; // superseded: another photo, a link, the dialog closed
+    setCardMedia(ladder.at(-1).img, ''); // no message to fit: the best version
+  } catch (err) {
+    if (card !== state || state.shrinking !== shrinking) return;
+    $('#card-note').textContent = err.message;
+  } finally {
+    if (state.shrinking === shrinking) state.shrinking = null;
+  }
+});
+// The form's submit button, so Enter in a field saves too.
+cardForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const state = card;
+  if (!state) return;
+  if (state.shrinking) await state.shrinking.catch(() => {});
+  if (card !== state) return; // closed or saved meanwhile
+  if (state.img === null) return toast(NO_MEDIA);
   const next = {
     name: field(cardForm, 'name').value.trim(),
     text: field(cardForm, 'text').value.trim(),
     sticker: $('#card-stickers [aria-pressed="true"]')?.textContent ?? $('#card-stickers').dataset.keep ?? '',
-    img: field(cardForm, 'nophoto').checked ? '' : c.img,
+    img: state.img,
   };
   try {
     codec.validate('contrib', [current.id, next.name, next.text, next.sticker, next.img]);
   } catch (e) {
     return toast(e.message);
   }
-  Object.assign(c, next); // the origin stays: merging the original link again finds it
+  let newFrom = Infinity;
+  if (state.origin) {
+    const i = cardIndex();
+    if (i < 0) return $('#dlg-card').close();
+    Object.assign(current.contribs[i], next); // the origin stays: merging the original link again finds it
+  } else {
+    reloadCurrent();
+    if (codec.addOwnPost(current, next) === 'full') return toast(`Die Pinnwand ist voll (höchstens ${codec.LIMITS.contribs} Beiträge).`);
+    newFrom = current.contribs.length - 1;
+  }
   if (!store.save(current)) return;
-  renderBoard(current);
+  card = null; // a second click, also one waiting for the same photo, saves nothing
+  renderBoard(current, newFrom);
   $('#dlg-card').close();
-};
+});
 function moveCard(step) {
   const i = cardIndex();
   const j = i + step;
@@ -564,12 +627,16 @@ function moveCard(step) {
   renderBoard(current);
   updateMoveButtons(j);
 }
-cardForm.addEventListener('submit', (e) => { e.preventDefault(); $('#card-save').click(); }); // Enter in the name field
-$('#dlg-card').addEventListener('close', () => stopPlayers($('#dlg-card')));
+$('#dlg-card').addEventListener('close', () => {
+  if ($('#dlg-card').open) return; // "close" comes as a task: the dialog may be open for the next card by then
+  card?.abort?.abort(); // a photo still being prepared for a card not saved
+  card = null;
+  stopPlayers($('#dlg-card'));
+});
 $('#card-earlier').onclick = () => moveCard(-1);
 $('#card-later').onclick = () => moveCard(1);
 $('#card-delete').onclick = async () => {
-  if (await removeContrib(cardFor)) $('#dlg-card').close();
+  if (card?.origin && await removeContrib(card.origin)) $('#dlg-card').close();
 };
 
 async function mergeRun(texts) {
@@ -764,7 +831,6 @@ function currentContrib() {
     img: write.photo ? write.photo.at(-1).img : parseMediaLink(field(writeForm, 'url').value), // null: no single video
   };
 }
-const NO_MEDIA = 'Dieser Link zeigt auf kein einzelnes Video oder GIF: Öffne es und teile dessen Link.';
 const messageFor = (name, link) => `Glückwunsch von ${name} für „${write.invite.title}“: ${link}`;
 // Encodes the contribution with the best photo version (write.photo, from
 // small to large) for which the whole message still fits MESSAGE_BUDGET. If

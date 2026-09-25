@@ -44,6 +44,7 @@
   <div class="toolbar" id="toolbar">
     <button type="button" class="primary" data-act="invite">Einladen</button>
     <button type="button" data-act="merge">Einsammeln</button>
+    <button type="button" data-act="write">Karte schreiben</button>
     <button type="button" data-act="build">Fertige Seite</button>
     <button type="button" data-act="settings">Einstellungen</button>
   </div>
@@ -150,16 +151,21 @@
 </dialog>
 
 <dialog id="dlg-card">
-  <h2>Beitrag bearbeiten</h2>
+  <h2 id="card-heading">Beitrag bearbeiten</h2>
   <form id="card-form">
     <label>Name <input name="name" required maxlength="60"></label>
     <label>Gruß <textarea name="text" required maxlength="1000" rows="6"></textarea></label>
     <fieldset class="stickers"><legend>Sticker</legend><div class="sticker-row" id="card-stickers"></div></fieldset>
-    <div id="card-photo"></div>
-    <label class="check" id="card-nophoto"><input type="checkbox" name="nophoto"> Foto, Video oder GIF entfernen</label>
+    <div id="card-media"></div>
+    <div class="row">
+      <label class="button">Foto wählen <input type="file" name="photo" accept="image/*" hidden></label>
+      <button type="button" id="card-nomedia">Medium entfernen</button>
+    </div>
+    <label>oder Link: YouTube, GIF oder Bild <input type="text" inputmode="url" name="url" placeholder="https://…" maxlength="2000" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <p class="note" id="card-note"></p>
   </form>
   <div class="row">
-    <button type="button" class="primary" id="card-save">Speichern</button>
+    <button type="submit" form="card-form" class="primary" id="card-save">Speichern</button>
     <button type="button" id="card-earlier">Nach vorn</button>
     <button type="button" id="card-later">Nach hinten</button>
     <button type="button" class="danger" id="card-delete">Löschen</button>

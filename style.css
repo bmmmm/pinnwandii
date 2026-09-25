@@ -61,8 +61,8 @@ p { margin: 0 0 0.75rem; }
 .card { position: relative; }
 .card .edit { position: absolute; z-index: 1; top: 0.4rem; right: 0.4rem; padding: 0.15rem 0.5rem; font-size: 1rem; line-height: 1.4; opacity: 0.85; }
 .card .edit:hover, .card .edit:focus-visible { opacity: 1; }
-#card-photo > img, #card-photo > .media { display: block; max-width: 12rem; border-radius: 0.5rem; margin: 0.5rem 0 0.25rem; }
-.check { display: flex; align-items: center; gap: 0.4rem; }
+#card-media > img, #card-media > .media { display: block; max-width: 12rem; border-radius: 0.5rem; margin: 0.5rem 0 0.25rem; }
+#card-form .row { margin: 0 0 0.75rem; }
 [data-preset="p"] .card { background: oklch(0.93 0.06 var(--h)); color: oklch(0.25 0.03 var(--h)); }
 [data-preset="b"] .card { background: oklch(0.5 0.17 var(--h)); color: #fff; }
 [data-preset="d"] .card { background: oklch(0.38 0.11 var(--h)); color: oklch(0.96 0.02 var(--h)); }
