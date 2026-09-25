@@ -6,7 +6,7 @@ import { deepEqual, equal, ok, rejects, throws } from 'node:assert/strict';
 import {
   LIMITS, addContrib, decodeBoard, decodeContrib, decodeInvite, encodeBoard,
   encodeContrib, encodeInvite, extractContribs, fromBase64, fromBase64url, imgSrc,
-  deletePost, mergeBoard, mergeContribs, mergeText, originOf, pack, sketchImg, toBase64, toBase64url, toTuple, unpack, validate,
+  deletePost, deletedIn, mergeBoard, mergeContribs, mergeText, originOf, pack, parseBackup, sketchImg, toBase64, toBase64url, toTuple, unpack, validate,
 } from './codec.js';
 import { MAX_SHAPES, isSketch, sketchSvg } from './sketch.js';
 import { encodeJpeg, jpegHeader, ssim, strippedLength, stripJpeg, unstripJpeg } from './jpeg.js';
@@ -438,4 +438,30 @@ test('26 two copies of a board: deletions travel, local edits win, new posts arr
   deepEqual(a.deleted, b.deleted);
   deepEqual(mergeBoard(b, a), { added: 0, dupes: 2, foreign: 0, full: 0, removed: 0 });
   equal(mergeBoard(a, { ...b, id: 'zzzzzz' }).foreign, 2);
+});
+
+test('27 an uncurated board is stored as before version 3; deletions from elsewhere only on request', async () => {
+  const toks = await Promise.all(['Anna', 'Ben'].map((name) => encodeContrib({ ...contrib, name })));
+  const b = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [] };
+  await mergeContribs(b, toks);
+  const t = toTuple('board', b);
+  equal(t.length, 5, 'no deleted list');
+  ok(t[4].every((e) => e.length === 4), 'no origins for unedited posts');
+  b.contribs[0].text = 'bearbeitet';
+  equal(toTuple('board', b)[4][0].length, 5, 'an edited post keeps its origin');
+  // a backup from another device that deleted Ben
+  const bt = toTuple('board', b);
+  const other = validate('board', [...bt.slice(0, 4), bt[4].slice(0, 1), [b.contribs[1].origin]]);
+  equal(parseBackup(JSON.stringify(toTuple('board', other))).deleted[0], b.contribs[1].origin);
+  equal(parseBackup('[25.09.26, 12:01] Anna: hallo'), null);
+  equal(parseBackup('{"name": "chat"}'), null);
+  deepEqual(deletedIn(b, other).map((e) => e.name), ['Ben']);
+  deepEqual(deletedIn(b, { ...other, id: 'zzzzzz' }), []);
+  deepEqual(mergeBoard(b, other, { deletions: false }), { added: 0, dupes: 1, foreign: 0, full: 0, removed: 0 });
+  deepEqual([b.contribs.length, b.deleted], [2, []]);
+  const keep = structuredClone(b);
+  deepEqual(await mergeText(keep, JSON.stringify(toTuple('board', other)), { deletions: false }), { added: 0, dupes: 1, foreign: 0, broken: 0, full: 0, removed: 0 });
+  equal(keep.contribs.length, 2);
+  deepEqual(await mergeText(b, JSON.stringify(toTuple('board', other))), { added: 0, dupes: 1, foreign: 0, broken: 0, full: 0, removed: 1 });
+  deepEqual(b.contribs.map((e) => e.name), ['Anna']);
 });

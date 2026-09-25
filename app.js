@@ -15,6 +15,19 @@ const KB = (n) => `${(n / 1024).toFixed(1).replace('.', ',')} KB`;
 const plural = (n) => (n === 1 ? '1 Beitrag' : `${n} Beiträge`);
 const SAVE_FAILED = 'Speichern nicht möglich: Speicher voll oder gesperrt. Lade eine Sicherung herunter.';
 const fullNote = (n) => (n ? ` ${n} nicht übernommen: Pinnwand voll (höchstens ${codec.LIMITS.contribs}).` : '');
+const removedNote = (n) => (n ? `, ${n} gelöscht` : '');
+
+// Merges another copy of a board (backup, admin link). Posts deleted there
+// are only deleted here after asking: a crafted file could otherwise make
+// cards disappear for good.
+async function mergeBackup(local, other) {
+  const gone = codec.deletedIn(local, other);
+  const names = gone.map((e) => e.name).join(', ');
+  const deletions = !gone.length || await confirmDialog(gone.length === 1
+    ? `Dort wurde 1 Beitrag gelöscht (${names}). Hier auch löschen?`
+    : `Dort wurden ${gone.length} Beiträge gelöscht (${names}). Hier auch löschen?`);
+  return codec.mergeBoard(local, other, { deletions });
+}
 // Signal (Android, Desktop) sends text over 2048 UTF-8 bytes as an attachment,
 // and the link arrives cut off; Telegram splits at 4096 characters. The whole
 // message stays below that, with room for a few words added by hand.
@@ -291,9 +304,9 @@ $('#restore').addEventListener('change', async (e) => {
     const b = codec.validate('board', JSON.parse(await file.text()));
     const local = store.load(b.id);
     if (local) {
-      const r = codec.mergeBoard(local, b);
+      const r = await mergeBackup(local, b);
       if (!store.save(local)) return;
-      toast(`Sicherung zusammengeführt: ${r.added} neue Beiträge.${fullNote(r.full)}`);
+      toast(`Sicherung zusammengeführt: ${r.added} neue Beiträge${removedNote(r.removed)}.${fullNote(r.full)}`);
     } else {
       if (!store.save(b)) return;
       toast(`Pinnwand „${b.title}“ geladen (${plural(b.contribs.length)}).`);
@@ -370,14 +383,14 @@ function receive(c) {
   location.replace(`#o=${board.id}`);
 }
 
-function adopt(b) {
+async function adopt(b) {
   const local = store.load(b.id);
   if (local) {
     const before = local.contribs.length;
-    const r = codec.mergeBoard(local, b);
+    const r = await mergeBackup(local, b);
     if (!store.save(local)) return showError(new Error(SAVE_FAILED));
-    highlightFrom = before;
-    toast(`Pinnwand zusammengeführt: ${r.added} neue Beiträge.${fullNote(r.full)}`);
+    highlightFrom = before - r.removed;
+    toast(`Pinnwand zusammengeführt: ${r.added} neue Beiträge${removedNote(r.removed)}.${fullNote(r.full)}`);
   } else {
     if (!store.save(b)) return showError(new Error(SAVE_FAILED));
     toast(`Pinnwand „${b.title}“ übernommen (${plural(b.contribs.length)}).`);
@@ -516,6 +529,7 @@ function moveCard(step) {
   renderBoard(current);
   updateMoveButtons(j);
 }
+cardForm.addEventListener('submit', (e) => { e.preventDefault(); $('#card-save').click(); }); // Enter in the name field
 $('#card-earlier').onclick = () => moveCard(-1);
 $('#card-later').onclick = () => moveCard(1);
 $('#card-delete').onclick = async () => {
@@ -525,15 +539,16 @@ $('#card-delete').onclick = async () => {
 async function mergeRun(texts) {
   reloadCurrent();
   const before = current.contribs.length;
-  const total = { added: 0, dupes: 0, foreign: 0, broken: 0, full: 0 };
+  const total = { added: 0, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0 };
   for (const t of texts) {
-    const r = await codec.mergeText(current, t);
-    for (const k of Object.keys(total)) total[k] += r[k];
+    const other = codec.parseBackup(t);
+    const r = other?.id === current.id ? { broken: 0, ...(await mergeBackup(current, other)) } : await codec.mergeText(current, t);
+    for (const k of Object.keys(total)) total[k] += r[k] ?? 0;
   }
   const saved = store.save(current);
-  renderBoard(current, before);
+  renderBoard(current, before - total.removed);
   renderMergeList();
-  $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt${saved ? '' : ' – nicht gespeichert!'}${total.full ? '.' + fullNote(total.full) : ''}`;
+  $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt${removedNote(total.removed)}${saved ? '' : ' – nicht gespeichert!'}${total.full ? '.' + fullNote(total.full) : ''}`;
 }
 async function readFiles(files) {
   try {

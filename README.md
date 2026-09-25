@@ -41,8 +41,10 @@ which contribution it came from (a short hash), and the board remembers
 deleted ones: pasting the same chat again, or merging an older backup or
 admin link, neither brings a deleted card back nor adds an edited one
 twice. Deletions made on another device travel with its admin link or
-backup; where both devices edited the same card, the device you merge
-into keeps its version.
+backup, after the app asks (with the names) whether to delete here too;
+where both devices edited the same card, the device you merge into keeps
+its version. A board nobody curated is stored exactly as before version 3,
+so a tab still running an older copy of the app can read it.
 
 ## Links and limits
 

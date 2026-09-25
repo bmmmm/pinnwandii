@@ -239,7 +239,14 @@ export function toTuple(kind, o) {
   if (kind === 'invite') return [o.id, o.title, o.preset, o.hue];
   if (kind === 'contrib') return [o.id, o.name, o.text, o.sticker, o.img];
   if (kind === 'board') {
-    return [o.id, o.title, o.preset, o.hue, o.contribs.map((c) => [c.name, c.text, c.sticker, c.img, c.origin ?? originOf(c)]), o.deleted ?? []];
+    // Unedited posts and an empty deleted list are written as before version
+    // 3 (origins follow from the content), so an uncurated board stays
+    // readable by an older copy of the app, e.g. a tab opened before an update.
+    const entries = o.contribs.map((c) => {
+      const t = [c.name, c.text, c.sticker, c.img];
+      return c.origin && c.origin !== originOf(c) ? [...t, c.origin] : t;
+    });
+    return o.deleted?.length ? [o.id, o.title, o.preset, o.hue, entries, o.deleted] : [o.id, o.title, o.preset, o.hue, entries];
   }
   throw new Error(`unknown kind: ${kind}`);
 }
@@ -374,18 +381,23 @@ export function deletePost(board, origin) {
   if (!board.deleted.includes(origin)) board.deleted = [...board.deleted, origin].slice(-LIMITS.deleted);
 }
 
+/** Posts of `board` that `other` (a copy of the same board) has deleted. */
+export const deletedIn = (board, other) =>
+  other.id === board.id ? board.contribs.filter((e) => (other.deleted ?? []).includes(e.origin)) : [];
+
 /**
  * Merges another copy of the same board (admin link, backup) into `board`:
- * posts deleted there are deleted here too, posts known here stay as they
- * are here (edits on this device win), new posts are added.
+ * posts deleted there are deleted here too (unless `deletions` is false),
+ * posts known here stay as they are here (edits on this device win), new
+ * posts are added.
  */
-export function mergeBoard(board, other) {
+export function mergeBoard(board, other, { deletions = true } = {}) {
   const r = { added: 0, dupes: 0, foreign: 0, full: 0, removed: 0 };
   if (other.id !== board.id) {
     r.foreign = other.contribs.length;
     return r;
   }
-  for (const origin of other.deleted ?? []) {
+  for (const origin of deletions ? other.deleted ?? [] : []) {
     const before = board.contribs.length;
     deletePost(board, origin);
     r.removed += before - board.contribs.length;
@@ -447,19 +459,20 @@ export async function mergeContribs(board, candidates) {
  * backup (Telegram exports chats as JSON); without any token it is counted
  * as one broken item.
  */
-export async function mergeText(board, text) {
-  const trimmed = text.trim();
-  let other = null;
-  let json = false;
-  if (/^[[{]/.test(trimmed) && /[\]}]$/.test(trimmed)) {
-    try {
-      const parsed = JSON.parse(trimmed);
-      json = true;
-      other = validate('board', parsed);
-    } catch { /* no backup: search it for tokens */ }
-  }
-  if (other) return { broken: 0, ...mergeBoard(board, other) };
+export async function mergeText(board, text, opts) {
+  const other = parseBackup(text);
+  if (other) return { broken: 0, ...mergeBoard(board, other, opts) };
   const cands = extractContribs(text);
-  if (json && cands.length === 0) return { added: 0, dupes: 0, foreign: 0, broken: 1, full: 0 };
+  if (looksLikeJson(text) && cands.length === 0) return { added: 0, dupes: 0, foreign: 0, broken: 1, full: 0 };
   return mergeContribs(board, cands);
+}
+const looksLikeJson = (text) => {
+  const t = text.trim();
+  if (!/^[[{]/.test(t) || !/[\]}]$/.test(t)) return false;
+  try { JSON.parse(t); return true; } catch { return false; }
+};
+/** The board in a backup (the board tuple as JSON), or null. */
+export function parseBackup(text) {
+  if (!looksLikeJson(text)) return null;
+  try { return validate('board', JSON.parse(text.trim())); } catch { return null; }
 }

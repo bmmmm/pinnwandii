@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { decodeContrib, encodeBoard, encodeContrib, newId, toBase64 } from '../codec.js';
+import { decodeContrib, encodeBoard, encodeContrib, newId, originOf, toBase64 } from '../codec.js';
 import { encodeJpeg } from '../jpeg.js';
 
 const require = createRequire(path.join(process.env.PUPPETEER_DIR ?? process.cwd(), 'x.js'));
@@ -572,6 +572,8 @@ try {
     return r;
   };
   check('14 four posts collected', (await pasteChat()) === '4 übernommen, 0 doppelt, 0 fremde Pinnwand, 0 defekt');
+  const storedShape = () => cp.evaluate((id) => { const t = JSON.parse(localStorage.getItem(`pinnwandii:${id}`)); return [t.length, ...t[4].map((e) => e.length)].join(); }, cur.id);
+  check('14 uncurated board is stored in the pre-version-3 shape', (await storedShape()) === '5,4,4,4,4', await storedShape());
   const openCard = async (name) => {
     await cp.$eval(`#wall .card button.edit[title="Beitrag von ${name} bearbeiten"]`, (b) => b.click());
     await waitFor(cp, () => document.querySelector('#dlg-card').open);
@@ -583,6 +585,7 @@ try {
   await cp.$eval('#card-save', (b) => b.click());
   await openCard('Anna');
   const photoShown = await visible(cp, '#card-nophoto');
+  const boxWidth = await cp.$eval('#card-form input[name=nophoto]', (b) => b.getBoundingClientRect().width);
   await cp.$eval('#card-form input[name=nophoto]', (b) => b.click());
   await cp.$eval('#card-save', (b) => b.click());
   await openCard('Dora');
@@ -594,11 +597,18 @@ try {
   await waitFor(cp, () => document.querySelector('#dlg-confirm').open);
   await cp.$eval('#confirm-ok', (b) => b.click());
   await waitFor(cp, () => document.querySelectorAll('#wall .card').length === 3);
+  await openCard('Anna');
+  await setValue(cp, '#card-form input[name=name]', 'Anna M.');
+  await cp.focus('#card-form input[name=name]');
+  await cp.keyboard.press('Enter');
+  await waitFor(cp, () => !document.querySelector('#dlg-card').open);
   const wallState = () => cp.$$eval('#wall .card', (cs) => cs.map((c) => [c.querySelector('.name').textContent, c.querySelector('.text').textContent, c.querySelector('.sticker')?.textContent ?? '', !!c.querySelector('img')]));
-  const expected = JSON.stringify([['Anna', 'Gruß von Anna', '', false], ['Dora', 'Gruß von Dora', '', false], ['Ben', 'Gruß von Ben, korrigiert', '🎈', false]]);
+  const expected = JSON.stringify([['Anna M.', 'Gruß von Anna', '', false], ['Dora', 'Gruß von Dora', '', false], ['Ben', 'Gruß von Ben, korrigiert', '🎈', false]]);
   const afterEdit = JSON.stringify(await wallState());
   await shot(cp, '14-curated');
-  check('14 edit text + sticker, remove photo, move, delete', photoShown && afterEdit === expected, afterEdit);
+  check('14 edit text + sticker, remove photo, move, delete, Enter saves', photoShown && afterEdit === expected, afterEdit);
+  check('14 "Foto entfernen" is a plain checkbox, not a stretched field', boxWidth > 0 && boxWidth < 40, `${boxWidth}px`);
+  check('14 curated board is stored with origins and deletions', (await storedShape()).startsWith('6,'), await storedShape());
   const again = await pasteChat();
   const afterMerge = JSON.stringify(await wallState());
   check('14 same chat again: nothing comes back, edits stay', again === '0 übernommen, 4 doppelt, 0 fremde Pinnwand, 0 defekt' && afterMerge === expected, `${again}; ${afterMerge}`);
@@ -619,6 +629,22 @@ try {
   await waitFor(cp2, () => document.querySelector('#merge-result').textContent.length > 0);
   const r2dev = await text(cp2, '#merge-result');
   check('14 second device via admin link: the deletion travels along', r2dev === '0 übernommen, 4 doppelt, 0 fremde Pinnwand, 0 defekt' && (await cardCount(cp2)) === 3, r2dev);
+  // a file that deletes a post (crafted or from another device) asks first
+  const killer = JSON.stringify([cur.id, 'x', 'p', 1, [], [originOf({ name: 'Dora', text: 'Gruß von Dora', sticker: '', img: '' })]]);
+  const pasteKiller = async (answer) => {
+    await setValue(cp2, '#merge-text', killer);
+    await cp2.evaluate(() => { document.querySelector('#merge-result').textContent = ''; });
+    await cp2.$eval('#merge-go', (b) => b.click());
+    await waitFor(cp2, () => document.querySelector('#dlg-confirm').open);
+    const q = await text(cp2, '#confirm-text');
+    await cp2.$eval(answer, (b) => b.click());
+    await waitFor(cp2, () => document.querySelector('#merge-result').textContent.length > 0);
+    return [q, await text(cp2, '#merge-result'), await cardCount(cp2)];
+  };
+  const [q1, keep, n1] = await pasteKiller('#confirm-cancel');
+  check('14 deletions from a file: asked by name, "Abbrechen" keeps the card', q1.includes('Dora') && n1 === 3 && !keep.includes('gelöscht'), `${q1} → ${keep}`);
+  const [, del, n2] = await pasteKiller('#confirm-ok');
+  check('14 deletions from a file: "Löschen" deletes and says so', n2 === 2 && del.includes('1 gelöscht'), del);
   await cp2.close();
 
   // ---- start page lists saved boards -------------------------------------------------------
