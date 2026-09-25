@@ -153,16 +153,23 @@ const playable = (c) => ['youtube', 'tenor'].includes(mediaOf(c.img)?.kind);
 export const hasPlayable = (board) => board.contribs.some(playable);
 
 /**
- * Token for the online view (#v=) of a videos file, at most `cap` characters:
- * the whole board if it fits, else only the cards that need a player (they
- * carry no photo), else null; null too for a board without such cards. A
- * view needs no origins and no deleted list.
+ * The online view (#v=) of a videos file in at most `cap` characters, as
+ * { token, scope }: the whole board ('all') if it fits, else every card
+ * without its photo ('text'), else only the cards that need a player
+ * ('videos'), else null; null too for a board without such cards. A view
+ * needs no origins and no deleted list.
  */
 export async function viewToken(board, cap) {
   if (!hasPlayable(board)) return null;
-  for (const contribs of [board.contribs, board.contribs.filter(playable)]) {
+  const photo = (img) => img.startsWith('data:') || img.startsWith('sketch:');
+  const rungs = [
+    ['all', board.contribs],
+    ['text', board.contribs.map((c) => (photo(c.img) ? { ...c, img: '' } : c))],
+    ['videos', board.contribs.filter(playable)],
+  ];
+  for (const [scope, contribs] of rungs) {
     const token = await encodeBoard({ ...board, contribs: contribs.map(({ origin, ...c }) => c), deleted: [] });
-    if (token.length <= cap) return token;
+    if (token.length <= cap) return { token, scope };
   }
   return null;
 }

@@ -46,7 +46,8 @@ Three roles, one static page:
    once the page is online. From a local file YouTube refuses to play (it
    needs the page's address as Referer), so there the videos file shows
    *Online ansehen*: a `#v=` link that opens the same board in the app,
-   where the videos play.
+   where the videos play; too big for one link, it carries the cards
+   without their photos, or only the videos, and says so.
 
 The organizer is the database. Nothing is ever written to a server, and the
 invitation link never reveals who has already replied. Each card remembers
@@ -77,7 +78,7 @@ embedding shows YouTube's notice with a link to watch it there.
 | Contribution with photo | whole message ≤ 1 900 bytes | one message in any messenger, Signal included |
 | Admin link `#b=` (whole board) | 3–4 KB for 50 texts, ~1 KB more per photo, offered up to 32 000 chars | second device, backup |
 | Finished page | file | download, share, print |
-| Videos file | file, plus an *Online ansehen* link `#v=`: the whole board up to 32 000 chars, else only the cards with players, else none (each card then links to YouTube or Tenor) | download, share; the link opens in the browser |
+| Videos file | file, plus an *Online ansehen* link `#v=`: the whole board up to 32 000 chars, else all cards without photos, else only the cards with players, else none (each card then links to YouTube or Tenor) | download, share; the link opens in the browser |
 
 Tokens are `3.<base64url>` of `u32 len | zlib(JSON) | photo bytes…`. The
 zlib checksum turns a copy error into a clear message instead of a garbled

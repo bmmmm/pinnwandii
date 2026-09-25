@@ -819,12 +819,12 @@ try {
   const vScripts = [...vh.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
   const vCsp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(vh)?.[1] ?? '';
   const vHash = vScripts.length ? `'sha256-${createHash('sha256').update(vScripts[0]).digest('base64')}'` : 'none';
-  check('15 videos file: one script, allowed by its hash; the players in frame-src', (vh.match(/<script/g) ?? []).length === 1 && vCsp.split('; ').includes(`script-src ${vHash}`) && vCsp.split('; ').includes('frame-src https://www.youtube-nocookie.com https://tenor.com'), vCsp);
-  const onlineHref = /<p class="online"><a href="([^"]+)"/.exec(vh)?.[1] ?? '';
+  check('15 videos file: one script, allowed by its hash; the players in frame-src', (vh.match(/<script/g) ?? []).length === 1 && vCsp.split('; ').includes(`script-src ${vHash}`) && vCsp.split('; ').includes('frame-src https://www.youtube-nocookie.com https://tenor.com') && vCsp.split('; ').includes("base-uri 'none'"), vCsp);
+  const [, onlineHref = '', onlineText = ''] = /<p class="online"><a href="([^"]+)"[^>]*>([^<]*)<\/a>/.exec(vh) ?? [];
   const onlineBoard = onlineHref.includes('#v=') ? await decodeBoard(onlineHref.split('#v=')[1]).catch(() => null) : null;
   const vo = await newPage(mCtx, 'videos-view');
   if (onlineBoard) await vo.goto(onlineHref, { waitUntil: 'networkidle0' });
-  check('15 videos file: "Online ansehen" opens the whole board in the app', onlineHref.startsWith(`${ORIGIN}/#v=`) && onlineBoard?.contribs.length === 4 && (await cardCount(vo)) === 4, onlineHref.slice(0, 60));
+  check('15 videos file: "Online ansehen" opens the whole board in the app', onlineText === 'Online ansehen' && onlineHref.startsWith(`${ORIGIN}/#v=`) && onlineBoard?.contribs.length === 4 && (await cardCount(vo)) === 4, `${onlineText} ${onlineHref.slice(0, 60)}`);
   await vo.close();
   const vf = await newPage(mCtx, 'videos-file');
   await vf.goto(`file://${vidPath}`, { waitUntil: 'load' });
@@ -832,7 +832,9 @@ try {
   await vf.$eval('a.media.video', (a) => a.click());
   await sleep(300);
   const fromDisk = await vf.evaluate(() => [getComputedStyle(document.querySelector('.online')).display !== 'none', document.querySelectorAll('iframe').length, document.querySelectorAll('.card').length].join());
-  check('15 videos file from disk: bar shown, a click starts no player', fromDisk === 'true,0,4', fromDisk);
+  await vf.emulateMediaType('print');
+  const diskPrint = await vf.evaluate(() => getComputedStyle(document.querySelector('.online')).display);
+  check('15 videos file from disk: bar shown (not printed), a click starts no player', fromDisk === 'true,0,4' && diskPrint === 'none', `${fromDisk}, printed ${diskPrint}`);
   await vf.close();
   served.set(`${ORIGIN}/boards/t.html`, vh);
   const vs = await newPage(mCtx, 'videos-online');
@@ -851,6 +853,21 @@ try {
   check('15 videos file printed: player hidden, thumbnail shown', vPrint === 'none,block', vPrint);
   await shot(vs, '15-videos-file-online');
   await vs.close();
+  // plain http off localhost has no crypto.subtle; a blocked popup still leaves the link
+  const vx = await newPage(mCtx, 'videos-fallbacks');
+  await vx.evaluateOnNewDocument(() => { Object.defineProperty(crypto, 'subtle', { value: undefined }); window.open = () => null; });
+  await vx.goto(`${ORIGIN}/#o=${med.id}`, { waitUntil: 'networkidle0' });
+  await vx.click('#toolbar [data-act=build]');
+  await waitFor(vx, () => document.querySelector('#dlg-build').open);
+  await vx.$eval('#build-video-download', (b) => b.click());
+  await waitFor(vx, () => document.querySelector('#toast').textContent.length > 0).catch(() => {});
+  const noSubtle = await text(vx, '#toast');
+  await vx.$eval('#build-online', (b) => b.click());
+  await waitFor(vx, () => document.querySelector('#dlg-share').open).catch(() => {});
+  const blocked = await vx.evaluate(() => [document.querySelector('#dlg-share').open, document.querySelector('#share-title').textContent, document.querySelector('#share-text').value.includes('#v=3.')]);
+  check('15 fallbacks: no crypto.subtle says https is needed; a blocked popup offers the link to copy', noSubtle === 'Die Seite mit Videos lässt sich nur über https bauen.' && blocked.join() === 'true,Online ansehen,true', `${noSubtle} ${blocked}`);
+  await vx.close();
+  await mp.bringToFront();
   await mp.bringToFront();
   await mp.click('#dlg-build [data-close]');
   // a hidden player would keep playing: closing its dialog or leaving its view drops it

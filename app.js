@@ -710,8 +710,10 @@ const loadCss = async () => (cssText ??= await fetch('style.css').then((r) => {
 
 // The print version has no script. The videos file adds the player
 // (PLAYER_JS, allowed by its hash) and a link to the same board in the app,
-// where YouTube plays: from a local file it refuses to (no Referer).
-function buildStaticPage(board, css, { script = '', hash = '', online = '' } = {}) {
+// where YouTube plays: from a local file it refuses to (no Referer). The
+// link's text says when the board was too big for it (viewToken).
+const ONLINE_LABEL = { all: 'Online ansehen', text: 'Online ansehen, ohne Fotos', videos: 'Nur die Videos online ansehen' };
+function buildStaticPage(board, css, { script = '', hash = '', online = null } = {}) {
   const doc = document.implementation.createHTMLDocument(board.title);
   doc.documentElement.lang = 'de';
   const charset = doc.createElement('meta');
@@ -739,11 +741,11 @@ function buildStaticPage(board, css, { script = '', hash = '', online = '' } = {
     const bar = doc.createElement('p');
     bar.className = 'online';
     const a = doc.createElement('a');
-    a.href = online;
+    a.href = online.href;
     a.target = '_blank';
     a.rel = 'noopener';
-    a.textContent = 'Online ansehen';
-    bar.append(a, ': Dort spielen die Videos, in dieser Datei öffnen sie YouTube.');
+    a.textContent = ONLINE_LABEL[online.scope];
+    bar.append(a, ': Dort spielen Videos und GIFs; in dieser Datei öffnet ein Klick YouTube oder Tenor.');
     header.append(bar);
   }
   const main = doc.createElement('main');
@@ -756,7 +758,10 @@ function buildStaticPage(board, css, { script = '', hash = '', online = '' } = {
   }
   return `<!doctype html>\n${doc.documentElement.outerHTML}`;
 }
-const onlineToken = (board) => viewToken(board, LINK_CAP - `${BASE}#v=`.length);
+async function onlineView(board) {
+  const view = await viewToken(board, LINK_CAP - `${BASE}#v=`.length);
+  return view && { href: `${BASE}#v=${view.token}`, scope: view.scope };
+}
 // The finished page as a file ('print' or 'videos'), or null (with a toast)
 // if the stylesheet cannot be loaded.
 async function pageFile(board, variant = 'print') {
@@ -768,8 +773,14 @@ async function pageFile(board, variant = 'print') {
     return null;
   }
   if (variant === 'print') return new File([buildStaticPage(board, css)], `pinnwand-${board.id}.html`, { type: 'text/html' });
-  const token = await onlineToken(board);
-  const html = buildStaticPage(board, css, { script: PLAYER_JS, hash: await scriptHash(PLAYER_JS), online: token ? `${BASE}#v=${token}` : '' });
+  let hash;
+  try {
+    hash = await scriptHash(PLAYER_JS);
+  } catch { // crypto.subtle exists only on https (and localhost)
+    toast('Die Seite mit Videos lässt sich nur über https bauen.');
+    return null;
+  }
+  const html = buildStaticPage(board, css, { script: PLAYER_JS, hash, online: await onlineView(board) });
   return new File([html], `pinnwand-${board.id}-videos.html`, { type: 'text/html' });
 }
 
@@ -804,9 +815,9 @@ $('#build-share').onclick = () => sharePage('print');
 $('#build-video-download').onclick = () => downloadPage('videos');
 $('#build-video-share').onclick = () => sharePage('videos');
 $('#build-online').onclick = async () => {
-  const token = await onlineToken(current);
-  if (!token) return toast(`Zu viele Beiträge für einen Link (höchstens ${KB(LINK_CAP)}).`);
-  if (!window.open(`${BASE}#v=${token}`, '_blank')) toast('Der Browser hat das Fenster blockiert.');
+  const view = await onlineView(current);
+  if (!view) return toast(`Zu viele Beiträge für einen Link (höchstens ${KB(LINK_CAP)}).`);
+  if (!window.open(view.href, '_blank')) openShare(ONLINE_LABEL[view.scope], 'Der Browser hat das Fenster blockiert: Kopiere den Link oder teile ihn.', view.href);
 };
 
 // ---- settings ---------------------------------------------------------------

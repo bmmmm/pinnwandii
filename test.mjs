@@ -646,17 +646,22 @@ test('33 the videos file: its script is playInline, allowed by its hash; the onl
       online ? [false, true, 1, m.link.dataset.embed, true] : [false, false, 0, undefined, false], protocol);
   }
   equal(await scriptHash(PLAYER_JS), `'sha256-${createHash('sha256').update(PLAYER_JS).digest('base64')}'`);
-  // the online view: the whole board if it fits, else the cards that need a player, else nothing
+  // the online view: the whole board if it fits, else every card without its photo, else only the players
   const video = { name: 'Vera', text: 'Ein Lied', sticker: '', img: `${YT}&t=90`, origin: 'Vera0000' };
   const small = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [{ name: 'A', text: 'a', sticker: '', img: photo(randomBytes(900, 3)), origin: 'A0000000' }, video], deleted: ['gone0000'] };
-  const whole = await decodeBoard(await viewToken(small, 32_000));
-  deepEqual([whole.contribs.map((c) => c.name), whole.deleted], [['A', 'Vera'], []]);
-  const big = { ...small, contribs: [...Array.from({ length: 200 }, (_, i) => ({ name: `P${i}`, text: 'Foto', sticker: '', img: photo(randomBytes(1000, i + 1)), origin: `p${String(i).padStart(7, '0')}` })), video] };
-  ok((await encodeBoard(big)).length > 32_000);
-  const token = await viewToken(big, 32_000);
-  ok(token.length <= 32_000, `${token.length}`);
-  deepEqual((await decodeBoard(token)).contribs.map((c) => [c.name, c.img]), [['Vera', video.img]]);
-  equal(await viewToken(big, 50), null, 'not even the videos fit');
+  const whole = await viewToken(small, 32_000);
+  deepEqual([whole.scope, (await decodeBoard(whole.token)).contribs.map((c) => [c.name, c.img]), (await decodeBoard(whole.token)).deleted], ['all', small.contribs.map((c) => [c.name, c.img]), []]);
+  const { obj } = await unpack(whole.token);
+  deepEqual([obj.length, obj[4].map((e) => e.length)], [5, [4, 4]], 'no origins, no deleted list');
+  const photos = { ...small, contribs: [...Array.from({ length: 200 }, (_, i) => ({ name: `P${i}`, text: 'Foto', sticker: '', img: photo(randomBytes(1000, i + 1)), origin: `p${String(i).padStart(7, '0')}` })), video] };
+  ok((await encodeBoard(photos)).length > 32_000);
+  const text = await viewToken(photos, 32_000);
+  deepEqual([text.scope, (await decodeBoard(text.token)).contribs.map((c) => c.img)], ['text', [...new Array(200).fill(''), video.img]]);
+  const long = { ...photos, contribs: photos.contribs.map((c, i) => ({ ...c, text: toBase64(randomBytes(740, i + 7)) })) };
+  const token = await viewToken(long, 32_000);
+  ok(token.token.length <= 32_000, `${token.token.length}`);
+  deepEqual([token.scope, (await decodeBoard(token.token)).contribs.map((c) => [c.name, c.img])], ['videos', [['Vera', video.img]]]);
+  equal(await viewToken(long, 50), null, 'not even the videos fit');
   const tenor = { ...small, contribs: [{ ...video, img: TENOR }] };
   ok(hasPlayable(tenor) && await viewToken(tenor, 32_000));
   const none = { ...small, contribs: [small.contribs[0], { ...video, img: GIPHY }] };
