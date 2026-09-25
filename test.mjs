@@ -4,9 +4,10 @@ import { test } from 'node:test';
 import { deepEqual, equal, ok, rejects, throws } from 'node:assert/strict';
 import {
   LIMITS, addContrib, decodeBoard, decodeContrib, decodeInvite, encodeBoard,
-  encodeContrib, encodeInvite, extractContribs, fromBase64url, mergeContribs,
-  mergeText, pack, toBase64, toBase64url, toTuple, unpack, validate,
+  encodeContrib, encodeInvite, extractContribs, fromBase64, fromBase64url, imgSrc,
+  mergeContribs, mergeText, pack, sketchImg, toBase64, toBase64url, toTuple, unpack, validate,
 } from './codec.js';
+import { MAX_SHAPES, isSketch, shapeCount, sketch, sketchSvg, trimSketch } from './sketch.js';
 
 const ID = 'AbC-_9';
 const board = {
@@ -34,7 +35,7 @@ const photo = (bytes) => 'data:image/jpeg;base64,' + toBase64(bytes);
 
 test('1 board round-trip keeps umlauts, emoji, newlines and RTL text', async () => {
   const tok = await encodeBoard(board);
-  ok(tok.startsWith('1.'));
+  ok(tok.startsWith('2.'));
   deepEqual(await decodeBoard(tok), board);
 });
 
@@ -167,4 +168,113 @@ test('10 mergeText: chat export starting with "[" is not a backup, real backup i
   deepEqual(await mergeText(target, backup), { added: 0, dupes: 3, foreign: 0, broken: 0 });
   deepEqual(await mergeText(target, '[1, 2, 3]'), { added: 0, dupes: 0, foreign: 0, broken: 1 });
   equal(target.contribs.length, 4);
+});
+
+// A 32 × 24 test image: dark left half, light right half, red square.
+function testImage() {
+  const w = 32, h = 24, rgba = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = (y * w + x) * 4;
+      const red = x >= 20 && x < 28 && y >= 4 && y < 12;
+      rgba.set(red ? [220, 30, 30, 255] : x < 16 ? [20, 20, 40, 255] : [240, 240, 220, 255], p);
+    }
+  }
+  return { rgba, w, h };
+}
+// Paints a sketch the way the SVG does (pixel centres, alpha 0.5, no blur)
+// and returns the mean absolute error against the image.
+function sketchError(bytes, { rgba, w, h }) {
+  const cur = [];
+  for (let i = 0; i < w * h; i++) cur.push([bytes[2], bytes[3], bytes[4]]);
+  const side = (ax, ay, bx, by, px, py) => (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+  for (let o = 5; o < bytes.length; o += 9) {
+    const [x1, y1, x2, y2, x3, y3, r, g, b] = bytes.subarray(o, o + 9);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const d = [side(x1, y1, x2, y2, x + 0.5, y + 0.5), side(x2, y2, x3, y3, x + 0.5, y + 0.5), side(x3, y3, x1, y1, x + 0.5, y + 0.5)];
+        if (!(d.every((v) => v >= 0) || d.every((v) => v <= 0))) continue;
+        const c = cur[y * w + x];
+        [r, g, b].forEach((v, k) => { c[k] += 0.5 * (v - c[k]); });
+      }
+    }
+  }
+  let err = 0;
+  cur.forEach((c, i) => c.forEach((v, k) => { err += Math.abs(v - rgba[i * 4 + k]); }));
+  return err / (w * h * 3);
+}
+
+test('11 sketch fit: error falls well below the flat background, deterministic, prefixes valid', async () => {
+  const img = testImage();
+  const bytes = await sketch(img.rgba, img.w, img.h, { shapes: 40 });
+  equal(bytes.length, 5 + 9 * 40);
+  ok(isSketch(bytes));
+  const flat = sketchError(trimSketch(bytes, 0), img);
+  const fitted = sketchError(bytes, img);
+  ok(fitted < flat * 0.4, `error ${fitted.toFixed(1)} vs flat ${flat.toFixed(1)}`);
+  // the best of the random candidates alone, without hill climbing, already helps
+  const rough = sketchError(await sketch(img.rgba, img.w, img.h, { shapes: 40, patience: 0 }), img);
+  ok(rough < flat * 0.8, `random-only error ${rough.toFixed(1)} vs flat ${flat.toFixed(1)}`);
+  deepEqual(await sketch(img.rgba, img.w, img.h, { shapes: 40 }), bytes);
+  ok(isSketch(trimSketch(bytes, 7)) && shapeCount(trimSketch(bytes, 7)) === 7);
+});
+
+test('12 sketches ride in the tail, stay small, and render as SVG from numbers only', async () => {
+  const img = testImage();
+  const bytes = await sketch(img.rgba, img.w, img.h, { shapes: 120 });
+  const c = { ...contrib, text: 'x'.repeat(280), img: sketchImg(bytes) };
+  const tok = await encodeContrib(c);
+  deepEqual(await decodeContrib(tok), c);
+  ok(tok.length <= 1800, `sketch token is ${tok.length} chars`);
+  const { obj, tail } = await unpack(tok);
+  equal(obj[4], -bytes.length);
+  deepEqual(tail, bytes);
+  const b = { ...board, contribs: [{ ...board.contribs[0], img: sketchImg(bytes) }, { ...board.contribs[1], img: photo(randomBytes(900)) }] };
+  deepEqual(await decodeBoard(await encodeBoard(b)), b);
+  const src = imgSrc(c.img);
+  ok(src.startsWith('data:image/svg+xml;base64,'));
+  const svg = atob(src.slice(src.indexOf(',') + 1));
+  equal(svg, sketchSvg(bytes));
+  ok(/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^<]*>(<\/?(filter|feGaussianBlur|rect|g|path)( [a-zA-Z-]+="[#0-9a-zA-Z. ()]*")*\/?>)+<\/svg>$/.test(svg), svg.slice(0, 200));
+  equal(imgSrc('https://example.org/p.jpg'), 'https://example.org/p.jpg');
+});
+
+test('13 malformed sketches are rejected', () => {
+  const good = Uint8Array.from([10, 8, 1, 2, 3, 0, 0, 10, 0, 5, 8, 9, 9, 9]);
+  ok(isSketch(good));
+  const bad = [
+    ['x beyond w', [10, 8, 1, 2, 3, 11, 0, 10, 0, 5, 8, 9, 9, 9]],
+    ['y beyond h', [10, 8, 1, 2, 3, 0, 0, 10, 0, 5, 9, 9, 9, 9]],
+    ['zero width', [0, 8, 1, 2, 3]],
+    ['partial shape', [10, 8, 1, 2, 3, 0, 0, 10]],
+    ['too many shapes', [10, 8, 1, 2, 3, ...new Array(9 * (MAX_SHAPES + 1)).fill(0)]],
+  ];
+  for (const [label, arr] of bad) {
+    equal(isSketch(Uint8Array.from(arr)), false, label);
+    throws(() => sketchSvg(Uint8Array.from(arr)), label);
+    throws(() => validate('contrib', [ID, 'A', 'B', '', sketchImg(Uint8Array.from(arr))]), { code: 'invalid' }, label);
+  }
+  deepEqual(validate('contrib', [ID, 'A', 'B', '', sketchImg(good)]).img, sketchImg(good));
+  throws(() => validate('contrib', [ID, 'A', 'B', '', 'sketch:A']), { code: 'invalid' });
+  throws(() => validate('contrib', [ID, 'A', 'B', '', -(LIMITS.sketch + 1)]), { code: 'invalid' });
+});
+
+test('14 version 1 tokens (JPEG photos) are still read', async () => {
+  const c = { ...contrib, img: photo(randomBytes(2000, 5)) };
+  const tok = await encodeContrib(c);
+  deepEqual(await decodeContrib('1.' + tok.slice(2)), c);
+  await rejects(decodeContrib('3.' + tok.slice(2)), { code: 'version' });
+  deepEqual(extractContribs(`https://x.test/#c=1.${tok.slice(2)}`), ['1.' + tok.slice(2)]);
+});
+
+test('15 extractor: no candidates from ordinary text, back-to-back bare tokens, no #i=/#b=', async () => {
+  const [a, b] = await Promise.all([encodeContrib(contrib), encodeContrib({ ...contrib, name: 'Ben' })]);
+  equal(extractContribs('1. November 2026 feiern wir alle zusammen bei Oma im Garten, ab 15 Uhr.').length, 0);
+  equal(extractContribs('Treffpunkt: 2.Advent danach gemeinsam zum Weihnachtsmarkt am alten Rathaus').length, 0);
+  equal(extractContribs('siehe Tabelle 1.AAB unten').length, 0);
+  deepEqual(extractContribs(`${a} ${b}`), [a, b]);
+  deepEqual(extractContribs(`https://x.test/#c=${a}\n2. Absatz`), [a]);
+  const inv = await encodeInvite(board);
+  const adm = await encodeBoard(board);
+  deepEqual(extractContribs(`https://x.test/#i=${inv} https://x.test/#b=${adm} https://x.test/#c=${a}`), [a]);
 });

@@ -9,15 +9,20 @@
 //   invite  = [id, title, preset, hue]
 //   contrib = [id, name, text, sticker, img]
 //   board   = [id, title, preset, hue, [[name, text, sticker, img], …]]
-//   img     = "" | "https://…" | <number: byte length of a photo in the tail>
-// In memory and in storage photos are data URIs; toTuple()/validate() convert
-// between tuples and plain objects.
+//   img     = "" | "https://…" | <number n: the next |n| bytes of the tail,
+//             a sketch (sketch.js) if n < 0, a JPEG photo if n > 0>
+// In memory and in storage a sketch is "sketch:<base64>" and a JPEG photo a
+// data URI; imgSrc() turns either into an <img> source. toTuple()/validate()
+// convert between tuples and plain objects. Version 2 added sketches; new
+// tokens are written as 2, version 1 tokens (JPEG photos) are still read.
+import { MAX_BYTES as SKETCH_BYTES, isSketch, sketchSvg } from './sketch.js';
 
-export const VERSION = '1';
+export const VERSION = '2';
+const READABLE = ['1', '2'];
 export const PRESETS = ['p', 'b', 'd'];
 export const LIMITS = Object.freeze({
   title: 80, name: 60, text: 1000, sticker: 8, url: 500,
-  photo: 28 * 1024, contribs: 500, token: 200_000,
+  photo: 28 * 1024, sketch: SKETCH_BYTES, contribs: 500, token: 200_000,
   json: 512 * 1024, tail: 4 * 1024 * 1024,
 });
 
@@ -119,7 +124,7 @@ export async function unpack(str) {
   const ver = dot > 0 ? str.slice(0, dot) : '';
   if (!/^\d+$/.test(ver)) fail('broken', MESSAGES.broken);
   // Version gate first: a newer token is never fed to the decompressor.
-  if (ver !== VERSION) {
+  if (!READABLE.includes(ver)) {
     const code = Number(ver) > Number(VERSION) ? 'version' : 'broken';
     fail(code, MESSAGES[code]);
   }
@@ -144,6 +149,8 @@ export async function unpack(str) {
 const ID_RE = /^[A-Za-z0-9_-]{6}$/;
 const URL_RE = /^https:\/\/\S+$/;
 const DATA_RE = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/;
+const SKETCH = 'sketch:';
+const SKETCH_RE = /^sketch:([A-Za-z0-9+/]+={0,2})$/;
 const isStr = (v, max, min = 1) => typeof v === 'string' && v.length >= min && v.length <= max;
 const dataUriBytes = (b64) =>
   Math.floor((b64.length * 3) / 4) - (b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0);
@@ -152,12 +159,14 @@ function checkImg(img) {
   if (img === '') return;
   if (typeof img === 'number') {
     if (Number.isInteger(img) && img > 0 && img <= LIMITS.photo) return;
+    if (Number.isInteger(img) && img < 0 && -img <= LIMITS.sketch) return;
     fail('invalid', 'Foto zu groß.');
   }
   if (typeof img !== 'string') fail('invalid', 'Bild: falscher Typ.');
   if (URL_RE.test(img) && img.length <= LIMITS.url) return;
   const m = DATA_RE.exec(img);
   if (m && dataUriBytes(m[1]) <= LIMITS.photo) return;
+  if (sketchBytes(img)) return;
   fail('invalid', 'Bild muss ein https-Link oder ein kleines Foto sein.');
 }
 function checkEntry(t) {
@@ -210,15 +219,32 @@ export function newId() {
   return toBase64url(crypto.getRandomValues(new Uint8Array(6))).slice(0, 6);
 }
 
-// ---- photos: data URIs <-> binary tail --------------------------------------
+// ---- photos: sketches and data URIs <-> binary tail --------------------------
+
+/** The bytes of a "sketch:" image, or null if `img` is no valid sketch. */
+export function sketchBytes(img) {
+  const m = SKETCH_RE.exec(img);
+  if (!m) return null;
+  let bytes;
+  try { bytes = fromBase64(m[1]); } catch { return null; }
+  return isSketch(bytes) ? bytes : null;
+}
+export const sketchImg = (bytes) => SKETCH + toBase64(bytes);
+
+/** Source for an <img>: sketches become SVG data URIs, other images already are URLs. */
+export function imgSrc(img) {
+  const bytes = sketchBytes(img);
+  return bytes ? 'data:image/svg+xml;base64,' + btoa(sketchSvg(bytes)) : img;
+}
 
 function splitPhotos(entries) {
   const bins = [];
   const wired = entries.map(([name, text, sticker, img]) => {
-    if (!img.startsWith('data:')) return [name, text, sticker, img];
-    const bytes = fromBase64(img.slice(img.indexOf(',') + 1));
+    const sketch = img.startsWith(SKETCH);
+    if (!sketch && !img.startsWith('data:')) return [name, text, sticker, img];
+    const bytes = fromBase64(img.slice(sketch ? SKETCH.length : img.indexOf(',') + 1));
     bins.push(bytes);
-    return [name, text, sticker, bytes.length];
+    return [name, text, sticker, sketch ? -bytes.length : bytes.length];
   });
   return [wired, bins];
 }
@@ -226,9 +252,10 @@ function joinPhotos(entries, tail) {
   let off = 0;
   const out = entries.map(([name, text, sticker, img]) => {
     if (typeof img !== 'number') return [name, text, sticker, img];
-    const bytes = tail.subarray(off, off + img);
-    off += img;
-    return [name, text, sticker, 'data:image/jpeg;base64,' + toBase64(bytes)];
+    const n = Math.abs(img);
+    const b64 = toBase64(tail.subarray(off, off + n));
+    off += n;
+    return [name, text, sticker, img < 0 ? SKETCH + b64 : 'data:image/jpeg;base64,' + b64];
   });
   if (off !== tail.length) fail('broken', MESSAGES.broken);
   return out;
@@ -293,18 +320,24 @@ export function mergeBoard(board, other) {
   return r;
 }
 
-// Token runs may contain whitespace: mail clients wrap long lines. The run is
-// kept as whitespace-separated segments so the merge can drop trailing
-// segments that turn out to be ordinary text following the link.
-const TOKEN_RE = /#c=1\.([A-Za-z0-9_\-\s]+)|(?<![A-Za-z0-9_\-.=#])1\.([A-Za-z0-9_\-\s]+)/g;
+// A token is "<version>.<base64url>", found after "#c=" or on its own. Token
+// runs may contain whitespace: mail clients wrap long lines. The run is kept
+// as whitespace-separated segments so the merge can drop trailing segments
+// that turn out to be ordinary text following the link; a segment starting
+// like a new token ("2.…") ends the run. A token on its own must start with
+// "AA" (a contribution's u32 length prefix is below 2^16) and be long, so
+// "1. November" or "Version 1.2" are no candidates, and "#i="/"#b=" links
+// are skipped. No lookbehind: Safari < 16.4 cannot parse it, and one regex
+// it cannot parse leaves the whole page blank.
+const TOKEN_RE = /(#c=|^|[^A-Za-z0-9_\-.=#])(\d)\.([A-Za-z0-9_-]+(?:\s+(?!\d\.)[A-Za-z0-9_-]+)*)/g;
 
 /** Finds contribution token candidates in free text (chat exports, mails). */
 export function extractContribs(text) {
   const out = [];
-  for (const m of text.matchAll(TOKEN_RE)) {
-    const segs = (m[1] ?? m[2]).trim().split(/\s+/);
-    if (m[2] !== undefined && segs.join('').length < 40) continue;
-    out.push('1.' + segs.join(' '));
+  for (const [, before, ver, run] of text.matchAll(TOKEN_RE)) {
+    const segs = run.split(/\s+/);
+    if (before !== '#c=' && (!run.startsWith('AA') || segs.join('').length < 40)) continue;
+    out.push(ver + '.' + segs.join(' '));
   }
   return out;
 }

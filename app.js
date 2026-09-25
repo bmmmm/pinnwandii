@@ -1,19 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// pinnwandii app: hash router, views, localStorage store, photo shrinking,
+// pinnwandii app: hash router, views, localStorage store, photo sketching,
 // sharing, merge dialog and the static page builder. All user content is
 // rendered through textContent / createElement, never through innerHTML.
 import * as codec from './codec.js';
+import { SIDE, shapeCount, sketch, trimSketch } from './sketch.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const field = (form, name) => form.elements.namedItem(name);
 const STICKERS = ['🎉', '🎂', '🎈', '🥳', '❤️', '🌟', '🍀', '🌸', '🎁', '🥂', '🎶', '☀️', '🐣', '🏆', '🙌', '💐'];
-const BASE = location.href.split('#')[0];
+const BASE = location.href.split(/[?#]/)[0]; // without ?fbclid= and the like
 const DEFAULT_THEME = { title: 'Pinnwand', preset: 'p', hue: 210 };
 const KB = (n) => `${(n / 1024).toFixed(1).replace('.', ',')} KB`;
 const plural = (n) => (n === 1 ? '1 Beitrag' : `${n} Beiträge`);
 const SAVE_FAILED = 'Speichern nicht möglich: Speicher voll oder gesperrt. Lade eine Sicherung herunter.';
 const entryKey = (e) => JSON.stringify([e.name, e.text, e.sticker, e.img]);
+// Signal (Android, Desktop) sends text over 2048 UTF-8 bytes as an attachment,
+// and the link arrives cut off; Telegram splits at 4096 characters. The whole
+// message stays below that, with room for a few words added by hand.
+const MESSAGE_BUDGET = 1900;
+const utf8Length = (s) => new TextEncoder().encode(s).length;
+const SHAPES = 160; // triangles fitted per photo; more never fit the budget
 
 function h(tag, props = {}, ...kids) {
   const e = document.createElement(tag);
@@ -156,7 +163,7 @@ function renderCard(c, i, doc = document) {
   card.style.setProperty('--r', rotOf(i));
   if (c.img) {
     const img = doc.createElement('img');
-    img.src = c.img;
+    img.src = codec.imgSrc(c.img);
     img.alt = '';
     img.loading = 'lazy';
     img.referrerPolicy = 'no-referrer';
@@ -591,6 +598,9 @@ function showWrite(invite) {
   updateWrite();
   show('view-write');
 }
+function renderPreview(c) {
+  $('#preview').replaceChildren(renderCard({ ...c, name: c.name || 'Dein Name', text: c.text || 'Dein Gruß' }, 0));
+}
 function currentContrib() {
   return {
     id: write.invite.id,
@@ -600,21 +610,36 @@ function currentContrib() {
     img: write.photo || field(writeForm, 'url').value.trim(),
   };
 }
+const messageFor = (name, link) => `Glückwunsch von ${name} für „${write.invite.title}“: ${link}`;
+// Encodes the contribution. A sketch drops its last, finest triangles until
+// the whole message fits MESSAGE_BUDGET; 12 link characters per triangle.
+async function fittedLink(c) {
+  const bytes = codec.sketchBytes(c.img);
+  let n = bytes ? shapeCount(bytes) : 0;
+  for (;;) {
+    const fitted = bytes ? { ...c, img: codec.sketchImg(trimSketch(bytes, n)) } : c;
+    const link = `${BASE}#c=${await codec.encodeContrib(fitted)}`;
+    const over = utf8Length(messageFor(fitted.name, link)) - MESSAGE_BUDGET;
+    if (over <= 0 || n === 0) return { c: fitted, link };
+    n = Math.max(0, n - Math.ceil(over / 12));
+  }
+}
 async function updateWrite() {
   const c = currentContrib();
   $('#count').textContent = field(writeForm, 'text').value.length;
-  $('#preview').replaceChildren(renderCard({ ...c, name: c.name || 'Dein Name', text: c.text || 'Dein Gruß' }, 0));
+  renderPreview(c);
   write.link = '';
   write.pending = null;
   write.error = '';
   $('#write-link').value = '';
   $('#size').textContent = '';
   if (!c.name || !c.text) return;
-  const pending = (write.pending = codec.encodeContrib(c));
+  const pending = (write.pending = fittedLink(c));
   try {
-    const tok = await pending;
+    const { c: fitted, link } = await pending;
     if (write.pending !== pending) return; // superseded by newer input
-    write.link = `${BASE}#c=${tok}`;
+    write.link = link;
+    renderPreview(fitted); // the sketch as sent, possibly with fewer triangles
     $('#write-link').value = write.link;
     $('#size').textContent = `Link: ${KB(write.link.length)}`;
   } catch (e) {
@@ -623,7 +648,7 @@ async function updateWrite() {
     $('#size').textContent = e.message;
   }
 }
-const shareTextFor = () => `Glückwunsch von ${currentContrib().name} für „${write.invite.title}“: ${write.link}`;
+const shareTextFor = () => messageFor(currentContrib().name, write.link);
 // Waits for a photo still being shrunk and for the debounced recompute, so
 // the link always matches what the form shows right now.
 async function ensureLink() {
@@ -658,12 +683,12 @@ field(writeForm, 'photo').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file) return;
-  $('#write-note').textContent = 'Foto wird verkleinert …';
-  const shrinking = (write.shrinking = shrinkImage(file));
+  $('#write-note').textContent = 'Foto wird umgewandelt …';
+  const shrinking = (write.shrinking = sketchImage(file));
   try {
     write.photo = await shrinking;
     field(writeForm, 'url').value = '';
-    $('#write-note').textContent = 'Foto übernommen.';
+    $('#write-note').textContent = 'Foto übernommen, als Skizze: So passt dein Gruß in eine Nachricht.';
   } catch (err) {
     write.photo = '';
     $('#write-note').textContent = err.message;
@@ -696,35 +721,34 @@ $('#send-file').onclick = async () => {
 
 // ---- photo pipeline ---------------------------------------------------------
 
-const blobToDataUri = (blob) => new Promise((resolve, reject) => {
-  const r = new FileReader();
-  r.onload = () => resolve(r.result);
-  r.onerror = () => reject(r.error);
-  r.readAsDataURL(blob);
-});
-async function shrinkImage(file) {
+// Photo -> sketch (sketch.js): a copy with the long side SIDE is fitted with
+// triangles. The result is ~1 KB instead of a 24 KB JPEG, so the link stays
+// short enough for every messenger.
+async function sketchImage(file) {
   let bmp;
   try {
     bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
   } catch {
     bmp = await createImageBitmap(file).catch(() => { throw new Error('Das Bild kann nicht gelesen werden.'); });
   }
+  let rgba, w, h;
   try {
-    for (const max of [480, 360]) {
-      const s = Math.min(1, max / Math.max(bmp.width, bmp.height));
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(bmp.width * s));
-      canvas.height = Math.max(1, Math.round(bmp.height * s));
-      canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
-      for (const q of [0.75, 0.6, 0.5, 0.4]) {
-        const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', q));
-        if (blob && blob.size <= 24 * 1024) return blobToDataUri(blob);
-      }
-    }
+    const s = Math.min(1, SIDE / Math.max(bmp.width, bmp.height));
+    w = Math.max(1, Math.round(bmp.width * s));
+    h = Math.max(1, Math.round(bmp.height * s));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#fff'; // transparent PNG areas become white, not black
+    ctx.fillRect(0, 0, w, h);
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bmp, 0, 0, w, h);
+    rgba = ctx.getImageData(0, 0, w, h).data;
   } finally {
     bmp.close();
   }
-  throw new Error('Foto zu groß, bitte ein anderes wählen.');
+  return codec.sketchImg(await sketch(rgba, w, h, { shapes: SHAPES }));
 }
 
 // ---- go ---------------------------------------------------------------------

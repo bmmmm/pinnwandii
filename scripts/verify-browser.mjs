@@ -1,0 +1,425 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// End-to-end check of pinnwandii in headless Chromium: organizer, guest with
+// photo sketch, merge, settings, finished page, viewer, mobile layout.
+//
+//   npm i --prefix <dir> puppeteer-core          # once, outside the repo
+//   PUPPETEER_DIR=<dir> node scripts/verify-browser.mjs
+//
+// Without ORIGIN the repository is served from disk through request
+// interception (no local port needed); ORIGIN=https://… tests a deployment.
+// CHROME points to the browser binary (default: Playwright's Chromium).
+// Screenshots and downloads go to OUT (default: a temp directory).
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { decodeContrib, encodeBoard, encodeContrib, newId, sketchBytes } from '../codec.js';
+import { shapeCount } from '../sketch.js';
+
+const require = createRequire(path.join(process.env.PUPPETEER_DIR ?? process.cwd(), 'x.js'));
+const puppeteer = require('puppeteer-core');
+const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const LOCAL = !process.env.ORIGIN;
+const ORIGIN = (process.env.ORIGIN ?? 'http://localhost:8765').replace(/\/$/, '');
+const OUT = process.env.OUT ?? fs.mkdtempSync(path.join(os.tmpdir(), 'pinnwandii-verify-'));
+const CHROME = process.env.CHROME ?? (() => {
+  const base = path.join(os.homedir(), 'Library/Caches/ms-playwright');
+  const dir = fs.readdirSync(base).filter((d) => /^chromium-\d+$/.test(d)).sort().pop();
+  return path.join(base, dir, 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing');
+})();
+const BUDGET = 1900; // MESSAGE_BUDGET in app.js
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
+for (const d of ['shots', 'downloads']) fs.mkdirSync(path.join(OUT, d), { recursive: true });
+
+const results = [];
+const check = (name, ok, detail = '') => {
+  results.push([ok, name, detail]);
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
+};
+const consoleLog = [];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const shot = (page, name) => page.screenshot({ path: path.join(OUT, 'shots', `${name}.png`) });
+const utf8 = (s) => Buffer.byteLength(s, 'utf8');
+async function newPage(ctx, label) {
+  const page = await ctx.newPage();
+  page.on('console', (m) => consoleLog.push(`[${label}] ${m.type()}: ${m.text()}`));
+  page.on('pageerror', (e) => consoleLog.push(`[${label}] pageerror: ${e.message}`));
+  page.on('requestfailed', (r) => consoleLog.push(`[${label}] requestfailed: ${r.url().split('#')[0]} ${r.failure()?.errorText}`));
+  if (LOCAL) {
+    await page.setRequestInterception(true);
+    page.on('request', (r) => {
+      const u = new URL(r.url());
+      if (u.origin !== ORIGIN) return r.continue();
+      const file = path.join(REPO, u.pathname === '/' ? 'index.html' : decodeURIComponent(u.pathname));
+      if (!file.startsWith(REPO) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return r.respond({ status: 404, body: 'not found' });
+      r.respond({ status: 200, contentType: TYPES[path.extname(file)] ?? 'application/octet-stream', body: fs.readFileSync(file) });
+    });
+  }
+  await page.setViewport({ width: 1200, height: 900 });
+  return page;
+}
+const setValue = (page, sel, value) => page.evaluate((sel, value) => {
+  const el = document.querySelector(sel);
+  el.value = value;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}, sel, value);
+const text = (page, sel) => page.$eval(sel, (e) => e.textContent);
+const visible = (page, sel) => page.$eval(sel, (e) => !e.hidden && getComputedStyle(e).display !== 'none').catch(() => false);
+const cardCount = (page) => page.$$eval('#wall .card', (c) => c.length);
+const waitFor = (page, fn, arg, ms = 5000) => page.waitForFunction(fn, { timeout: ms }, arg);
+const tokenOf = (link) => link.match(/#c=(\S+)/)?.[1];
+async function contrast(page) {
+  return page.evaluate(() => {
+    const card = document.querySelector('#wall .card');
+    const cs = getComputedStyle(card);
+    const ctx = document.createElement('canvas').getContext('2d');
+    const rgb = (c) => { ctx.fillStyle = c; ctx.fillRect(0, 0, 1, 1); return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3); };
+    const lum = ([r, g, b]) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+    const l1 = lum(rgb(cs.backgroundColor)), l2 = lum(rgb(cs.color));
+    return Math.round(((Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)) * 100) / 100;
+  });
+}
+// Test images drawn in the page: a JPEG scene and a PNG with a transparent background.
+async function makeImages(page) {
+  const [jpg, png] = await page.evaluate(async () => {
+    const draw = (w, h, fn, type) => {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      fn(c.getContext('2d'));
+      return c.toDataURL(type, 0.9);
+    };
+    return [
+      draw(1200, 900, (g) => {
+        const sky = g.createLinearGradient(0, 0, 0, 500);
+        sky.addColorStop(0, '#4a90d9'); sky.addColorStop(1, '#cfe8ff');
+        g.fillStyle = sky; g.fillRect(0, 0, 1200, 900);
+        g.fillStyle = '#3d8b37'; g.fillRect(0, 550, 1200, 350);
+        g.fillStyle = '#ffd23f'; g.beginPath(); g.arc(950, 180, 110, 0, 7); g.fill();
+        g.fillStyle = '#b5332e'; g.fillRect(250, 330, 360, 260);
+        g.fillStyle = '#5a2a18'; g.beginPath(); g.moveTo(220, 340); g.lineTo(430, 170); g.lineTo(640, 340); g.fill();
+      }, 'image/jpeg'),
+      draw(400, 400, (g) => {
+        g.fillStyle = '#1b2a6b'; g.beginPath(); g.arc(200, 200, 90, 0, 7); g.fill();
+      }, 'image/png'),
+    ];
+  });
+  const save = (uri, name) => {
+    const f = path.join(OUT, name);
+    fs.writeFileSync(f, Buffer.from(uri.slice(uri.indexOf(',') + 1), 'base64'));
+    return f;
+  };
+  return { jpg: save(jpg, 'scene.jpg'), png: save(png, 'transparent.png') };
+}
+
+const browser = await puppeteer.launch({
+  executablePath: CHROME, headless: true, pipe: true, protocolTimeout: 30000,
+  userDataDir: fs.mkdtempSync(path.join(OUT, 'udd-')),
+  args: ['--no-first-run', '--lang=de-DE', '--no-sandbox', '--disable-gpu'],
+});
+try {
+  // ---- 1. organizer creates a board -----------------------------------------
+  const org = await browser.createBrowserContext();
+  await org.overridePermissions(ORIGIN, ['clipboard-read', 'clipboard-write', 'clipboard-sanitized-write']);
+  const page = await newPage(org, 'org');
+  const bcdp = await browser.target().createCDPSession();
+  await bcdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: path.join(OUT, 'downloads'), browserContextId: org.id, eventsEnabled: true });
+  await page.goto(`${ORIGIN}/`, { waitUntil: 'networkidle0' });
+  check('1 start view shown', await visible(page, '#view-start'));
+  const images = await makeImages(page);
+  await setValue(page, '#new-form input[name=title]', 'Alles Gute zum 80., Oma!');
+  await page.click('#new-form input[value=b]');
+  await setValue(page, '#new-form input[name=hue]', '300');
+  await page.click('#new-form button.primary');
+  await waitFor(page, () => /^#o=[A-Za-z0-9_-]{6}$/.test(location.hash));
+  const boardId = await page.evaluate(() => location.hash.slice(3));
+  check('1 board created, #o= route', await visible(page, '#view-board') && await visible(page, '#toolbar'), `id ${boardId}`);
+  check('1 empty wall hint', await visible(page, '#empty') && (await cardCount(page)) === 0);
+  check('1 theme applied', await page.evaluate(() => document.body.dataset.preset === 'b' && document.body.style.getPropertyValue('--hue') === '300' && document.title === 'Alles Gute zum 80., Oma!'));
+  await shot(page, '01-board-empty');
+
+  // ---- 2. invite -> guest writes with a photo sketch --------------------------
+  await page.click('#toolbar [data-act=invite]');
+  await waitFor(page, () => document.querySelector('#dlg-share').open);
+  const inviteText = await page.$eval('#share-text', (e) => e.value);
+  const inviteLink = inviteText.match(/https?:\/\/\S+#i=\S+/)?.[0];
+  check('2 invite link ~120 chars', !!inviteLink && inviteLink.length < 200, `${inviteLink?.length} chars`);
+  await page.click('#dlg-share [data-close]');
+
+  const guestCtx = await browser.createBrowserContext();
+  await guestCtx.overridePermissions(ORIGIN, ['clipboard-read', 'clipboard-write', 'clipboard-sanitized-write']);
+  const guest = await newPage(guestCtx, 'guest');
+  // a messenger's tracking parameter must not ride along into the reply link
+  await guest.goto(inviteLink.replace('#i=', '?fbclid=XYZ#i='), { waitUntil: 'networkidle0' });
+  check('2 write view with invite title', await visible(guest, '#view-write') && (await text(guest, '#title')) === 'Alles Gute zum 80., Oma!');
+  await setValue(guest, '#write-form input[name=name]', 'Anna Müller');
+  await setValue(guest, '#write-form textarea[name=text]', 'Liebe Oma, alles Gute! 🎉\nWir feiern bald zusammen.');
+  await guest.click('#sticker-row button:nth-child(2)');
+  const photoInput = await guest.$('#write-form input[name=photo]');
+  const t0 = Date.now();
+  await photoInput.uploadFile(images.jpg);
+  await waitFor(guest, () => document.querySelector('#write-note').textContent.startsWith('Foto übernommen'), null, 20000);
+  const sketchMs = Date.now() - t0;
+  await waitFor(guest, () => document.querySelector('#write-link').value.length > 100);
+  const guestLink = await guest.$eval('#write-link', (e) => e.value);
+  const guestMsg = `Glückwunsch von Anna Müller für „Alles Gute zum 80., Oma!“: ${guestLink}`;
+  const sent = await decodeContrib(tokenOf(guestLink));
+  check('2 preview shows the sketch as SVG + sticker', await guest.evaluate(() => !!document.querySelector('#preview .card img[src^="data:image/svg+xml"]') && document.querySelector('#preview .card .sticker')?.textContent === '🎂'));
+  check('2 link carries a sketch, version 2, no query string', !!sketchBytes(sent.img) && guestLink.includes('/#c=2.') && !guestLink.includes('?'), `${shapeCount(sketchBytes(sent.img) ?? new Uint8Array(5))} triangles, ${sketchMs} ms`);
+  check(`2 whole message ≤ ${BUDGET} bytes (one Signal message)`, utf8(guestMsg) <= BUDGET, `${utf8(guestMsg)} bytes, size line "${await text(guest, '#size')}"`);
+  await shot(guest, '02-write');
+
+  // long text: fewer triangles, still one message
+  await guest.evaluate(() => { window.__copied = null; navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve(); }; });
+  const longText = 'Liebe Oma, wir denken an dich und wünschen dir alles Gute! '.repeat(17).slice(0, 1000);
+  await setValue(guest, '#write-form textarea[name=text]', longText);
+  await guest.click('#copy-link');
+  await waitFor(guest, () => typeof window.__copied === 'string');
+  const longMsg = await guest.evaluate(() => window.__copied);
+  const longSent = await decodeContrib(tokenOf(longMsg));
+  const nLong = shapeCount(sketchBytes(longSent.img) ?? new Uint8Array(5));
+  check(`2 1000-char text + photo: message ≤ ${BUDGET} bytes, sketch trimmed but kept`, utf8(longMsg) <= BUDGET && longSent.text === longText && nLong > 20 && nLong < shapeCount(sketchBytes(sent.img)), `${utf8(longMsg)} bytes, ${nLong} triangles`);
+  const previewSrc = await guest.$eval('#preview .card img', (e) => e.src);
+  check('2 preview shows the trimmed sketch that is sent', previewSrc === `data:image/svg+xml;base64,${Buffer.from((await import('../sketch.js')).sketchSvg(sketchBytes(longSent.img))).toString('base64')}`);
+  await setValue(guest, '#write-form textarea[name=text]', 'Liebe Oma, alles Gute! 🎉\nWir feiern bald zusammen.');
+
+  // ---- 3. copy link -> organizer receives -------------------------------------
+  await guest.bringToFront();
+  await guest.evaluate(() => { window.__copied = null; });
+  await guest.click('#copy-link');
+  await waitFor(guest, () => typeof window.__copied === 'string');
+  check('3 copy link: toast confirms clipboard write', (await text(guest, '#toast')) === 'Kopiert.', await text(guest, '#toast'));
+  const copiedLink = (await guest.evaluate(() => window.__copied)).match(/https?:\/\/\S+#c=\S+/)[0];
+  await page.bringToFront();
+  await page.goto(copiedLink, { waitUntil: 'networkidle0' });
+  await waitFor(page, (id) => location.hash === `#o=${id}`, boardId);
+  await sleep(300);
+  check('3 contribution merged, card with sketch', (await cardCount(page)) === 1 && await page.evaluate(() => !!document.querySelector('#wall .card img[src^="data:image/svg+xml"]')));
+  check('3 toast shown', await page.evaluate(() => document.querySelector('#toast').textContent.includes('übernommen (1)')), await text(page, '#toast'));
+  await shot(page, '03-received');
+
+  // transparent PNG: the sketch background is light, not black
+  await guest.bringToFront();
+  await photoInput.uploadFile(images.png);
+  await waitFor(guest, () => document.querySelector('#write-note').textContent.startsWith('Foto übernommen'), null, 20000);
+  await waitFor(guest, () => document.querySelector('#write-link').value.length > 100);
+  const pngSent = await decodeContrib(tokenOf(await guest.$eval('#write-link', (e) => e.value)));
+  const bg = [...(sketchBytes(pngSent.img) ?? []).slice(2, 5)];
+  check('3 transparent PNG: sketch background is light', bg.length === 3 && bg.every((v) => v > 150), `background ${bg}`);
+
+  // ---- P1-3: "Senden" right after typing must ship the current text ---------
+  await guest.evaluate(() => { window.__copied = null; });
+  await setValue(guest, '#write-form textarea[name=text]', 'Neuer Text, sofort gesendet.');
+  await guest.click('#copy-link'); // no wait: the 300 ms debounce is still pending
+  await waitFor(guest, () => typeof window.__copied === 'string');
+  const copiedTok = tokenOf(await guest.evaluate(() => window.__copied));
+  const decoded = copiedTok ? await decodeContrib(copiedTok).catch((e) => ({ text: 'ERR ' + e.message })) : { text: 'no token' };
+  check('P1-3 copied link carries the just-typed text', decoded.text === 'Neuer Text, sofort gesendet.', decoded.text);
+
+  // ---- P1-1: a second tab saves the same board ---------------------------------
+  const zedLink = `${ORIGIN}/#c=${await encodeContrib({ id: boardId, name: 'Zed', text: 'Aus dem zweiten Tab', sticker: '', img: '' })}`;
+  const tabB = await newPage(org, 'tabB');
+  await tabB.goto(zedLink, { waitUntil: 'networkidle0' });
+  await waitFor(tabB, (id) => location.hash === `#o=${id}`, boardId);
+  await waitFor(page, () => document.querySelectorAll('#wall .card').length === 2);
+  check('P1-1 tab A follows the save from tab B (storage event)', (await cardCount(page)) === 2);
+  await page.bringToFront(); // a click in a background tab hangs (IntersectionObserver never fires)
+  await page.click('#toolbar [data-act=settings]');
+  await waitFor(page, () => document.querySelector('#dlg-settings').open);
+  await setValue(page, '#settings-form input[name=hue]', '77'); // input + change -> save from tab A
+  await page.click('#dlg-settings [data-close]');
+  await page.reload({ waitUntil: 'networkidle0' });
+  await sleep(200);
+  check('P1-1 tab A save keeps tab B\'s post and its own hue', (await cardCount(page)) === 2 && await page.evaluate(() => document.body.style.getPropertyValue('--hue') === '77'));
+  await tabB.close();
+  await page.bringToFront();
+  await page.click('#toolbar [data-act=merge]');
+  await waitFor(page, () => document.querySelector('#dlg-merge').open);
+  await page.evaluate(() => [...document.querySelectorAll('#merge-list li')].find((li) => li.textContent.includes('Zed')).querySelector('button.x').click());
+  await waitFor(page, () => document.querySelector('#dlg-confirm').open);
+  await page.click('#confirm-ok');
+  await waitFor(page, () => document.querySelectorAll('#wall .card').length === 1);
+  check('P1-1 delete via confirm dialog removes exactly that post', (await cardCount(page)) === 1 && !(await page.evaluate(() => document.querySelector('#merge-list').textContent.includes('Zed'))));
+  await page.click('#dlg-merge [data-close]');
+
+  // ---- 4. merge dialog: paste chat export, then same file ------------------------
+  const mk = (name, id = boardId) => encodeContrib({ id, name, text: `Gruß von ${name} 🎈`, sticker: '🎈', img: '' });
+  const [tA, tB, tC, tF] = await Promise.all([mk('Ben'), mk('Chris'), mk('Dana'), mk('Fremd', 'zzzzzz')]);
+  const wrap = (t) => t.slice(0, 40) + '\r\n' + t.slice(40, 80) + '\n' + t.slice(80);
+  const chat = [
+    `[25.09.26, 12:01] Ben: Glückwunsch von Ben für „Oma“: ${ORIGIN}/#c=${tA}`,
+    `[25.09.26, 12:02] Chris: ${ORIGIN}/#c=${wrap(tB)}`,
+    'Liebe Grüße',
+    `25.09.26, 12:03 - Dana: ${ORIGIN}/#c=${tC}`,
+    `[25.09.26, 12:04] Ben: nochmal ${ORIGIN}/#c=${tA}`,
+    `[25.09.26, 12:05] Fremd: ${ORIGIN}/#c=${tF}`,
+    `[25.09.26, 12:06] Emil: ${ORIGIN}/#c=${tB.slice(0, 40)}`,
+    '[25.09.26, 12:07] Oma: 1. November feiern wir alle zusammen bei mir im Garten, ab 15 Uhr',
+  ].join('\n');
+  const chatFile = path.join(OUT, 'chat-export.txt');
+  fs.writeFileSync(chatFile, chat);
+  await page.click('#toolbar [data-act=merge]');
+  await waitFor(page, () => document.querySelector('#dlg-merge').open);
+  await setValue(page, '#merge-text', chat);
+  await page.click('#merge-go');
+  await waitFor(page, () => document.querySelector('#merge-result').textContent.length > 0);
+  const r1 = await text(page, '#merge-result');
+  check('4 merge result line', r1 === '3 übernommen, 1 doppelt, 1 fremde Pinnwand, 1 defekt', r1);
+  check('4 four cards', (await cardCount(page)) === 4);
+  await (await page.$('#merge-files')).uploadFile(chatFile);
+  await waitFor(page, () => document.querySelector('#merge-result').textContent.startsWith('0 '));
+  const r2 = await text(page, '#merge-result');
+  // the export lists Ben's link twice, so both count as duplicates now
+  check('4 same file again: all duplicates', r2 === '0 übernommen, 4 doppelt, 1 fremde Pinnwand, 1 defekt', r2);
+  check('4 list shows 4 entries with delete buttons', (await page.$$eval('#merge-list li button.x', (b) => b.length)) === 4);
+  await shot(page, '04-merge');
+  await page.click('#dlg-merge [data-close]');
+
+  // ---- 5. settings: presets, admin link, backup ------------------------------------
+  await page.click('#toolbar [data-act=settings]');
+  await waitFor(page, () => document.querySelector('#dlg-settings').open);
+  const ratios = {};
+  for (const p of ['p', 'b', 'd']) {
+    await page.click(`#settings-form input[value=${p}]`);
+    await sleep(100);
+    ratios[p] = await contrast(page);
+    await page.evaluate(() => document.querySelector('#dlg-settings').close());
+    await shot(page, `05-preset-${p}`);
+    await page.evaluate(() => document.querySelector('#dlg-settings').showModal());
+  }
+  check('5 contrast ≥ 4.5 in all presets', Object.values(ratios).every((r) => r >= 4.5), JSON.stringify(ratios));
+  await page.click('#settings-form input[value=b]');
+  await setValue(page, '#settings-form input[name=hue]', '40');
+  await sleep(100);
+  check('5 hue live', await page.evaluate(() => document.body.style.getPropertyValue('--hue') === '40'));
+  await page.click('#admin-link');
+  await waitFor(page, () => document.querySelector('#dlg-share').open);
+  const adminLink = await page.$eval('#share-text', (e) => e.value);
+  check('5 admin link offered', adminLink.startsWith(`${ORIGIN}/#b=2.`) && adminLink.length < 32000, `${adminLink.length} chars`);
+  await page.click('#dlg-share [data-close]');
+  const dev2Ctx = await browser.createBrowserContext();
+  const dev2 = await newPage(dev2Ctx, 'dev2');
+  await dev2.goto(adminLink, { waitUntil: 'networkidle0' });
+  await waitFor(dev2, (id) => location.hash === `#o=${id}`, boardId);
+  await sleep(200);
+  check('5 admin link on fresh device: 4 cards, organizer view', (await cardCount(dev2)) === 4 && await visible(dev2, '#toolbar') && await dev2.evaluate(() => document.body.dataset.preset === 'b'));
+  await page.bringToFront();
+  await page.click('#backup');
+  const backupPath = path.join(OUT, 'downloads', `pinnwand-${boardId}.json`);
+  for (let i = 0; i < 50 && !fs.existsSync(backupPath); i++) await sleep(100);
+  check('5 backup downloaded', fs.existsSync(backupPath), backupPath);
+  await page.click('#dlg-settings [data-close]');
+  await page.click('#toolbar [data-act=merge]');
+  await waitFor(page, () => document.querySelector('#dlg-merge').open);
+  await (await page.$('#merge-files')).uploadFile(backupPath);
+  await waitFor(page, () => document.querySelector('#merge-result').textContent.length > 0);
+  const r3 = await text(page, '#merge-result');
+  check('5 backup re-import: all duplicates', r3 === '0 übernommen, 4 doppelt, 0 fremde Pinnwand, 0 defekt', r3);
+  await page.click('#dlg-merge [data-close]');
+
+  // ---- 6. finished page: preview tab and download ------------------------------------
+  await page.click('#toolbar [data-act=build]');
+  await waitFor(page, () => document.querySelector('#dlg-build').open);
+  const popupPromise = new Promise((r) => browser.once('targetcreated', (t) => r(t)));
+  await page.click('#build-preview');
+  const preview = await (await popupPromise).page();
+  preview.on('pageerror', (e) => consoleLog.push(`[preview] pageerror: ${e.message}`));
+  await preview.waitForSelector('.card');
+  const pv = await preview.evaluate(() => ({
+    cards: document.querySelectorAll('.card').length,
+    sketch: !!document.querySelector('.card img[src^="data:image/svg+xml"]'),
+    sketchDrawn: document.querySelector('.card img[src^="data:image/svg+xml"]')?.naturalWidth > 0,
+    scripts: document.querySelectorAll('script').length,
+    preset: document.body.dataset.preset, hue: document.body.style.getPropertyValue('--hue'),
+    styled: getComputedStyle(document.querySelector('.card')).borderRadius !== '0px',
+    blob: location.protocol === 'blob:',
+  }));
+  check('6 preview tab: 4 cards, sketch drawn, no script, themed, styled', pv.cards === 4 && pv.sketch && pv.sketchDrawn && pv.scripts === 0 && pv.preset === 'b' && pv.hue === '40' && pv.styled && pv.blob, JSON.stringify(pv));
+  await shot(preview, '06-preview');
+  await preview.close();
+  await page.bringToFront();
+  await page.click('#build-download');
+  const htmlPath = path.join(OUT, 'downloads', `pinnwand-${boardId}.html`);
+  for (let i = 0; i < 50 && !fs.existsSync(htmlPath); i++) await sleep(100);
+  check('6 html downloaded', fs.existsSync(htmlPath), htmlPath);
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  check('6 html file: doctype, CSP meta, no <script', html.startsWith('<!doctype html>') && html.includes('Content-Security-Policy') && !/<script/i.test(html));
+  const filePage = await org.newPage();
+  await filePage.goto(`file://${htmlPath}`, { waitUntil: 'load' });
+  await waitFor(filePage, () => document.querySelector('.card img')?.complete).catch(() => {}); // lazy image
+  check('6 file:// renders 4 cards with the sketch', await filePage.evaluate(() => document.querySelectorAll('.card').length === 4 && document.querySelector('.card img[src^="data:image/svg+xml"]')?.naturalWidth > 0 && getComputedStyle(document.querySelector('.card')).borderRadius !== '0px'));
+  await shot(filePage, '06-file');
+  await filePage.close();
+  await page.bringToFront();
+  await page.click('#dlg-build [data-close]');
+
+  // ---- 7. viewer link and broken link --------------------------------------------------
+  const viewLink = adminLink.replace('#b=', '#v=');
+  await dev2.bringToFront();
+  await dev2.goto(viewLink, { waitUntil: 'networkidle0' });
+  await sleep(200);
+  check('7 #v= viewer: 4 cards, no toolbar', (await cardCount(dev2)) === 4 && !(await visible(dev2, '#toolbar')));
+  await dev2.goto(adminLink.slice(0, -40), { waitUntil: 'networkidle0' });
+  await sleep(200);
+  const errText = await text(dev2, '#error-text');
+  check('7 truncated link -> error view with text, hash kept', await visible(dev2, '#view-error') && errText.length > 10 && await dev2.evaluate(() => location.hash.startsWith('#b=')), errText);
+  await shot(dev2, '07-error');
+  await dev2.goto(`${ORIGIN}/#i=9.abc`, { waitUntil: 'networkidle0' });
+  check('7 newer version -> error', (await text(dev2, '#error-text')).includes('neueren Version'));
+  await dev2.close();
+
+  // ---- 9. mobile viewport ----------------------------------------------------------------
+  await page.bringToFront();
+  await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+  await page.reload({ waitUntil: 'networkidle0' });
+  await sleep(300);
+  const mob = await page.evaluate(() => {
+    // offsetLeft ignores the decorative rotation; bounding boxes of rotated cards differ by a few px
+    const lefts = [...document.querySelectorAll('#wall .card')].map((c) => c.offsetLeft);
+    const btns = [...document.querySelectorAll('#toolbar button')].map((b) => b.getBoundingClientRect());
+    return {
+      innerWidth, scrollWidth: document.documentElement.scrollWidth,
+      oneColumn: new Set(lefts).size === 1,
+      buttonsInside: btns.every((r) => r.left >= 0 && r.right <= innerWidth && r.width > 0),
+    };
+  });
+  check('9 390px: one column, no horizontal scroll, buttons reachable', mob.innerWidth === 390 && mob.scrollWidth <= 390 && mob.oneColumn && mob.buttonsInside, JSON.stringify(mob));
+  await shot(page, '09-mobile');
+  await page.setViewport({ width: 1200, height: 900 });
+
+  // ---- 10. fifty-card board --------------------------------------------------------------
+  const words = 'alles gute liebe oma wir wünschen dir gesundheit glück freude und viele schöne jahre bleib wie du bist danke für alles'.split(' ');
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0);
+  const big = { id: newId(), title: 'Fünfzig Grüße', preset: 'p', hue: 120, contribs: Array.from({ length: 50 }, (_, i) => {
+    let t = '';
+    while (t.length < 120 + (rnd() % 160)) t += words[rnd() % words.length] + ' ';
+    return { name: `Person ${i + 1}`, text: t.trim(), sticker: i % 4 ? '🎉' : '', img: '' };
+  }) };
+  const bigLink = `${ORIGIN}/#b=${await encodeBoard(big)}`;
+  const bigCtx = await browser.createBrowserContext();
+  const bigPage = await newPage(bigCtx, 'big');
+  await bigPage.goto(bigLink, { waitUntil: 'networkidle0' });
+  await waitFor(bigPage, () => location.hash.startsWith('#o=') && document.querySelector('#meta').textContent.includes('Admin-Link'));
+  const meta = await text(bigPage, '#meta');
+  check('10 fifty cards + meta line', (await cardCount(bigPage)) === 50 && /^50 Beiträge · Admin-Link: \d+,\d KB$/.test(meta) && bigLink.length < 12000, `${meta}; link ${bigLink.length} chars`);
+  await shot(bigPage, '10-fifty');
+  await bigPage.close();
+
+  // ---- start page lists saved boards -------------------------------------------------------
+  await page.bringToFront();
+  await page.goto(`${ORIGIN}/`, { waitUntil: 'networkidle0' });
+  check('start lists saved board', await page.$$eval('#saved li a', (a) => a.map((x) => x.textContent)).then((t) => t.includes('Alles Gute zum 80., Oma!')));
+} catch (e) {
+  check('script completed without exception', false, e.stack);
+} finally {
+  // ---- 8. console --------------------------------------------------------------------------
+  const bad = consoleLog.filter((l) => /CSP|Refused|Error|error|pageerror|requestfailed/.test(l));
+  check('8 console clean (CSP|Refused|Error)', bad.length === 0, bad.join(' | ').slice(0, 800));
+  await browser.close();
+  const fails = results.filter(([ok]) => !ok).length;
+  console.log(`\n${results.length - fails}/${results.length} checks passed · output in ${OUT}`);
+  fs.writeFileSync(path.join(OUT, 'verify-results.json'), JSON.stringify({ results, consoleLog }, null, 1));
+  process.exit(fails ? 1 : 0);
+}
