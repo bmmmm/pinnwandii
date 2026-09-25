@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="de">
+<head>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src https: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Pinnwand</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-preset="p">
+<header class="top"><h1 id="title">Pinnwand</h1></header>
+<main>
+
+<section id="view-start" hidden>
+  <div class="panel">
+    <p>Eine Pinnwand für Glückwünsche: du lädst ein, alle schreiben, du sammelst ein und baust die fertige Seite. Alles im Browser, ohne Konto.</p>
+    <form id="new-form">
+      <label>Titel <input name="title" required maxlength="80" placeholder="Alles Gute zum 80., Oma!"></label>
+      <fieldset class="presets"><legend>Farbwelt</legend>
+        <label><input type="radio" name="preset" value="p" checked> Pastell</label>
+        <label><input type="radio" name="preset" value="b"> Kräftig</label>
+        <label><input type="radio" name="preset" value="d"> Dunkel</label>
+      </fieldset>
+      <label>Farbton <input type="range" name="hue" min="0" max="359" value="210"></label>
+      <div class="row"><button class="primary">Pinnwand anlegen</button></div>
+    </form>
+  </div>
+  <div class="panel" id="saved-panel" hidden>
+    <h2>Deine Pinnwände</h2>
+    <ul id="saved" class="list"></ul>
+  </div>
+  <div class="panel">
+    <label class="button">Sicherung laden <input type="file" id="restore" accept=".json,application/json" hidden></label>
+  </div>
+</section>
+
+<section id="view-board" hidden>
+  <div class="toolbar" id="toolbar">
+    <button type="button" class="primary" data-act="invite">Einladen</button>
+    <button type="button" data-act="merge">Einsammeln</button>
+    <button type="button" data-act="build">Fertige Seite</button>
+    <button type="button" data-act="settings">Einstellungen</button>
+  </div>
+  <p class="panel" id="empty" hidden>Noch keine Beiträge. Teile den Einladungslink, die Antworten sammelst du über „Einsammeln“ ein.</p>
+  <div class="wall" id="wall"></div>
+  <p class="meta" id="meta"></p>
+</section>
+
+<section id="view-write" hidden>
+  <form id="write-form" class="panel">
+    <label>Dein Name <input name="name" required maxlength="60" autocomplete="name"></label>
+    <label>Dein Gruß <textarea name="text" required maxlength="1000" rows="5"></textarea></label>
+    <p class="count"><span id="count">0</span>/1000</p>
+    <fieldset class="stickers"><legend>Sticker</legend><div id="sticker-row"></div></fieldset>
+    <label class="button">Foto wählen <input type="file" name="photo" accept="image/*" hidden></label>
+    <label>oder Bild-Link <input type="url" name="url" placeholder="https://…" maxlength="500"></label>
+    <p class="note" id="write-note"></p>
+    <div class="wall preview" id="preview"></div>
+    <p class="size" id="size"></p>
+    <label>Dein Link <textarea class="link" id="write-link" readonly rows="2"></textarea></label>
+    <div class="row">
+      <button class="primary" id="send">Senden</button>
+      <button type="button" id="copy-link">Link kopieren</button>
+      <button type="button" id="send-file">Als Datei senden</button>
+    </div>
+    <p class="hint">Schick das an die Person, von der du den Einladungslink hast. Ist der Link im Messenger nicht antippbar (Telegram, Mail): als Datei senden.</p>
+  </form>
+</section>
+
+<section id="view-receive" hidden>
+  <div class="wall" id="receive-card"></div>
+  <p class="panel">Diese Pinnwand liegt nicht auf diesem Gerät. Öffne zuerst deinen Admin-Link oder lade auf der Startseite deine Sicherung, dann tippe diesen Link noch einmal an.</p>
+</section>
+
+<section id="view-error" hidden>
+  <div class="panel">
+    <p id="error-text"></p>
+    <div class="row"><button type="button" id="error-new">Neue Pinnwand</button></div>
+  </div>
+</section>
+
+</main>
+
+<dialog id="dlg-share">
+  <h2 id="share-title">Einladen</h2>
+  <p id="share-hint"></p>
+  <textarea class="link" id="share-text" readonly rows="3"></textarea>
+  <div class="row">
+    <button type="button" class="primary" id="share-share">Teilen</button>
+    <button type="button" id="share-copy">Kopieren</button>
+    <button type="button" data-close>Schließen</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-merge">
+  <h2>Einsammeln</h2>
+  <p>Füge die Antworten hier ein: einzelne Links, einen ganzen Chat-Export oder deine Sicherung.</p>
+  <textarea id="merge-text" rows="5" placeholder="Links hier einfügen oder Dateien hierher ziehen"></textarea>
+  <div class="row">
+    <button type="button" class="primary" id="merge-go">Übernehmen</button>
+    <button type="button" id="merge-clip">Aus Zwischenablage</button>
+    <label class="button">Dateien wählen <input type="file" id="merge-files" multiple accept=".txt,.json,text/plain,application/json" hidden></label>
+  </div>
+  <p id="merge-result" role="status"></p>
+  <h3>Beiträge</h3>
+  <ul id="merge-list" class="list"></ul>
+  <div class="row"><button type="button" data-close>Schließen</button></div>
+</dialog>
+
+<dialog id="dlg-build">
+  <h2>Fertige Seite</h2>
+  <p>Eine einzelne HTML-Datei ohne Skripte, mit allen Fotos. Zum Drucken oder als PDF: Datei öffnen, drucken. Für einen kurzen Link: Datei ins Repo legen, siehe README.</p>
+  <div class="row">
+    <button type="button" class="primary" id="build-preview">Vorschau</button>
+    <button type="button" id="build-download">Herunterladen</button>
+    <button type="button" id="build-share">Teilen</button>
+    <button type="button" data-close>Schließen</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-settings">
+  <h2>Einstellungen</h2>
+  <form id="settings-form">
+    <label>Titel <input name="title" required maxlength="80"></label>
+    <fieldset class="presets"><legend>Farbwelt</legend>
+      <label><input type="radio" name="preset" value="p"> Pastell</label>
+      <label><input type="radio" name="preset" value="b"> Kräftig</label>
+      <label><input type="radio" name="preset" value="d"> Dunkel</label>
+    </fieldset>
+    <label>Farbton <input type="range" name="hue" min="0" max="359"></label>
+  </form>
+  <h3>Auf ein anderes Gerät</h3>
+  <p>Der Admin-Link trägt die ganze Pinnwand; die Sicherung ist eine Datei, die du über „Einsammeln“ oder auf der Startseite wieder lädst.</p>
+  <p id="admin-note"></p>
+  <div class="row">
+    <button type="button" id="admin-link">Admin-Link</button>
+    <button type="button" id="backup">Sicherung herunterladen</button>
+  </div>
+  <div class="row">
+    <button type="button" class="danger" id="delete-board">Pinnwand löschen</button>
+    <button type="button" data-close>Schließen</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-confirm">
+  <p id="confirm-text"></p>
+  <div class="row">
+    <button type="button" class="danger" id="confirm-ok">Löschen</button>
+    <button type="button" id="confirm-cancel">Abbrechen</button>
+  </div>
+</dialog>
+
+<div id="toast" popover="manual" role="status"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
