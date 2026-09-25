@@ -174,7 +174,7 @@ try {
   await guest.evaluate(() => { window.__copied = null; navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve(); }; });
   const longText = 'Liebe Oma, wir denken an dich und wünschen dir alles Gute! '.repeat(17).slice(0, 1000);
   await setValue(guest, '#write-form textarea[name=text]', longText);
-  await guest.click('#copy-link');
+  await guest.$eval('#copy-link', (b) => b.click()); // DOM click: the #size line above the buttons empties and refills while encoding
   await waitFor(guest, () => typeof window.__copied === 'string');
   const longMsg = await guest.evaluate(() => window.__copied);
   const longSent = await decodeContrib(tokenOf(longMsg));
@@ -187,7 +187,7 @@ try {
   // ---- 3. copy link -> organizer receives -------------------------------------
   await guest.bringToFront();
   await guest.evaluate(() => { window.__copied = null; });
-  await guest.click('#copy-link');
+  await guest.$eval('#copy-link', (b) => b.click()); // DOM click: the #size line above the buttons empties and refills while encoding
   await waitFor(guest, () => typeof window.__copied === 'string');
   check('3 copy link: toast confirms clipboard write', (await text(guest, '#toast')) === 'Kopiert.', await text(guest, '#toast'));
   const copiedLink = (await guest.evaluate(() => window.__copied)).match(/https?:\/\/\S+#c=\S+/)[0];
@@ -211,7 +211,7 @@ try {
   // ---- P1-3: "Senden" right after typing must ship the current text ---------
   await guest.evaluate(() => { window.__copied = null; });
   await setValue(guest, '#write-form textarea[name=text]', 'Neuer Text, sofort gesendet.');
-  await guest.click('#copy-link'); // no wait: the 300 ms debounce is still pending
+  await guest.$eval('#copy-link', (b) => b.click()); // DOM click: the #size line above the buttons empties and refills while encoding // no wait: the 300 ms debounce is still pending
   await waitFor(guest, () => typeof window.__copied === 'string');
   const copiedTok = tokenOf(await guest.evaluate(() => window.__copied));
   const decoded = copiedTok ? await decodeContrib(copiedTok).catch((e) => ({ text: 'ERR ' + e.message })) : { text: 'no token' };
@@ -406,6 +406,26 @@ try {
   check('10 fifty cards + meta line', (await cardCount(bigPage)) === 50 && /^50 Beiträge · Admin-Link: \d+,\d KB$/.test(meta) && bigLink.length < 12000, `${meta}; link ${bigLink.length} chars`);
   await shot(bigPage, '10-fifty');
   await bigPage.close();
+
+  // ---- 11. a full board: merge and receive report instead of failing -------------
+  const fullBoard = { id: newId(), title: 'Voll', preset: 'p', hue: 10, contribs: Array.from({ length: 500 }, (_, i) => ({ name: `P${i}`, text: 'x', sticker: '', img: '' })) };
+  const fullCtx = await browser.createBrowserContext();
+  const fullPage = await newPage(fullCtx, 'full');
+  await fullPage.goto(`${ORIGIN}/#b=${await encodeBoard(fullBoard)}`, { waitUntil: 'networkidle0' });
+  await waitFor(fullPage, () => location.hash.startsWith('#o='));
+  const extra = await encodeContrib({ id: fullBoard.id, name: 'Zu spät', text: 'Noch einer', sticker: '', img: '' });
+  await fullPage.click('#toolbar [data-act=merge]');
+  await waitFor(fullPage, () => document.querySelector('#dlg-merge').open);
+  await setValue(fullPage, '#merge-text', `${ORIGIN}/#c=${extra}`);
+  await fullPage.click('#merge-go');
+  await waitFor(fullPage, () => document.querySelector('#merge-result').textContent.length > 0);
+  const rFull = await text(fullPage, '#merge-result');
+  check('11 full board: merge reports the rest', rFull === '0 übernommen, 0 doppelt, 0 fremde Pinnwand, 0 defekt 1 nicht übernommen: Pinnwand voll (höchstens 500).', rFull);
+  await fullPage.goto(`${ORIGIN}/#c=${extra}`, { waitUntil: 'networkidle0' });
+  await sleep(200);
+  const hintFull = await text(fullPage, '#receive-hint');
+  check('11 full board: receive view says so, board unchanged', await visible(fullPage, '#view-receive') && hintFull.includes('voll') && await fullPage.evaluate((id) => JSON.parse(localStorage.getItem(`pinnwandii:${id}`))[4].length === 500, fullBoard.id), hintFull);
+  await fullPage.close();
 
   // ---- start page lists saved boards -------------------------------------------------------
   await page.bringToFront();

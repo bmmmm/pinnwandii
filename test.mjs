@@ -5,7 +5,7 @@ import { deepEqual, equal, ok, rejects, throws } from 'node:assert/strict';
 import {
   LIMITS, addContrib, decodeBoard, decodeContrib, decodeInvite, encodeBoard,
   encodeContrib, encodeInvite, extractContribs, fromBase64, fromBase64url, imgSrc,
-  mergeContribs, mergeText, pack, sketchImg, toBase64, toBase64url, toTuple, unpack, validate,
+  mergeBoard, mergeContribs, mergeText, pack, sketchImg, toBase64, toBase64url, toTuple, unpack, validate,
 } from './codec.js';
 import { MAX_SHAPES, isSketch, shapeCount, sketch, sketchSvg, trimSketch } from './sketch.js';
 
@@ -130,7 +130,7 @@ test('8 chat export merge: wrapped, duplicate, foreign and broken tokens', async
   const cands = extractContribs(text);
   equal(cands.length, 6);
   const target = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [] };
-  deepEqual(await mergeContribs(target, cands), { added: 3, dupes: 1, foreign: 1, broken: 1 });
+  deepEqual(await mergeContribs(target, cands), { added: 3, dupes: 1, foreign: 1, broken: 1, full: 0 });
   deepEqual(target.contribs.map((e) => e.name), ['Anna', 'Ben', 'Chris']);
   // bare tokens without the #c= prefix are found too, short noise is not
   equal(extractContribs(`Version 1.2 und hier: ${a}`).length, 1);
@@ -161,12 +161,12 @@ test('10 mergeText: chat export starting with "[" is not a backup, real backup i
   const tok = await encodeContrib(contrib);
   const target = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [] };
   const chat = `[25.09.26, 12:01] Anna: https://x.test/#c=${tok}\n[25.09.26, 12:02] Ben: [Bild weggelassen]`;
-  deepEqual(await mergeText(target, chat), { added: 1, dupes: 0, foreign: 0, broken: 0 });
+  deepEqual(await mergeText(target, chat), { added: 1, dupes: 0, foreign: 0, broken: 0, full: 0 });
   const backup = JSON.stringify(toTuple('board', board));
   ok(backup.startsWith('['));
-  deepEqual(await mergeText(target, backup), { added: 3, dupes: 0, foreign: 0, broken: 0 });
-  deepEqual(await mergeText(target, backup), { added: 0, dupes: 3, foreign: 0, broken: 0 });
-  deepEqual(await mergeText(target, '[1, 2, 3]'), { added: 0, dupes: 0, foreign: 0, broken: 1 });
+  deepEqual(await mergeText(target, backup), { added: 3, dupes: 0, foreign: 0, broken: 0, full: 0 });
+  deepEqual(await mergeText(target, backup), { added: 0, dupes: 3, foreign: 0, broken: 0, full: 0 });
+  deepEqual(await mergeText(target, '[1, 2, 3]'), { added: 0, dupes: 0, foreign: 0, broken: 1, full: 0 });
   equal(target.contribs.length, 4);
 });
 
@@ -277,4 +277,45 @@ test('15 extractor: no candidates from ordinary text, back-to-back bare tokens, 
   const inv = await encodeInvite(board);
   const adm = await encodeBoard(board);
   deepEqual(extractContribs(`https://x.test/#i=${inv} https://x.test/#b=${adm} https://x.test/#c=${a}`), [a]);
+});
+
+test('16 mergeText: JSON that is no backup is searched for links (Telegram export)', async () => {
+  const [a, b] = await Promise.all([encodeContrib(contrib), encodeContrib({ ...contrib, name: 'Ben' })]);
+  const target = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [] };
+  const telegram = JSON.stringify({ name: 'Oma 80', messages: [
+    { from: 'Anna', text: `Glückwunsch von Anna: https:\/\/x.test\/#c=${a}` },
+    { from: 'Ben', text: ['Hier: ', { type: 'link', text: `https://x.test/#c=${b}` }] },
+  ] });
+  deepEqual(await mergeText(target, telegram), { added: 2, dupes: 0, foreign: 0, broken: 0, full: 0 });
+  deepEqual(target.contribs.map((e) => e.name), ['Anna', 'Ben']);
+});
+
+test('17 a full board counts the rest instead of throwing', async () => {
+  const target = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: Array.from({ length: LIMITS.contribs - 1 }, (_, i) => ({ name: `P${i}`, text: 'x', sticker: '', img: '' })) };
+  const toks = await Promise.all(['Anna', 'Ben', 'Cleo'].map((name) => encodeContrib({ ...contrib, name })));
+  deepEqual(await mergeContribs(target, toks), { added: 1, dupes: 0, foreign: 0, broken: 0, full: 2 });
+  equal(target.contribs.length, LIMITS.contribs);
+  equal(addContrib(target, { ...contrib, name: 'Dora' }), 'full');
+  equal(addContrib(target, { ...contrib, name: 'Anna' }), 'dupes');
+  const other = { ...target, contribs: [{ name: 'Emil', text: 'y', sticker: '', img: '' }] };
+  deepEqual(mergeBoard(target, other), { added: 0, dupes: 0, foreign: 0, full: 1 });
+});
+
+test('18 photo boards, exact limits, and no foreign SVG', async () => {
+  const img = testImage();
+  const sk = sketchImg(await sketch(img.rgba, img.w, img.h, { shapes: 5 }));
+  const b = { ...board, contribs: [
+    { name: 'A', text: 'a', sticker: '', img: photo(randomBytes(3000, 1)) },
+    { name: 'B', text: 'b', sticker: '', img: '' },
+    { name: 'C', text: 'c', sticker: '', img: sk },
+    { name: 'D', text: 'd', sticker: '', img: photo(randomBytes(5000, 2)) },
+    { name: 'E', text: 'e', sticker: '', img: 'https://example.org/e.jpg' },
+  ] };
+  deepEqual(await decodeBoard(await encodeBoard(b)), b);
+  const full = ['n'.repeat(LIMITS.name), 't'.repeat(LIMITS.text), '🎉'.repeat(LIMITS.sticker), ''];
+  const max = [ID, 'x'.repeat(LIMITS.title), 'p', 359, Array.from({ length: LIMITS.contribs }, () => full)];
+  equal(validate('board', max).contribs.length, LIMITS.contribs);
+  ok(validate('contrib', [ID, 'A', 'B', '', photo(randomBytes(LIMITS.photo, 4))]));
+  const svg = 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+  throws(() => validate('contrib', [ID, 'A', 'B', '', svg]), { code: 'invalid' });
 });

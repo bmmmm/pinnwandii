@@ -14,6 +14,7 @@ const DEFAULT_THEME = { title: 'Pinnwand', preset: 'p', hue: 210 };
 const KB = (n) => `${(n / 1024).toFixed(1).replace('.', ',')} KB`;
 const plural = (n) => (n === 1 ? '1 Beitrag' : `${n} Beiträge`);
 const SAVE_FAILED = 'Speichern nicht möglich: Speicher voll oder gesperrt. Lade eine Sicherung herunter.';
+const fullNote = (n) => (n ? ` ${n} nicht übernommen: Pinnwand voll (höchstens ${codec.LIMITS.contribs}).` : '');
 const entryKey = (e) => JSON.stringify([e.name, e.text, e.sticker, e.img]);
 // Signal (Android, Desktop) sends text over 2048 UTF-8 bytes as an attachment,
 // and the link arrives cut off; Telegram splits at 4096 characters. The whole
@@ -289,7 +290,7 @@ $('#restore').addEventListener('change', async (e) => {
     if (local) {
       const r = codec.mergeBoard(local, b);
       if (!store.save(local)) return;
-      toast(`Sicherung zusammengeführt: ${r.added} neue Beiträge.`);
+      toast(`Sicherung zusammengeführt: ${r.added} neue Beiträge.${fullNote(r.full)}`);
     } else {
       if (!store.save(b)) return;
       toast(`Pinnwand „${b.title}“ geladen (${plural(b.contribs.length)}).`);
@@ -349,6 +350,7 @@ function receive(c) {
   }
   const before = board.contribs.length;
   const r = codec.addContrib(board, c);
+  if (r === 'full') return showReceive(c, `Die Pinnwand ist voll (höchstens ${codec.LIMITS.contribs} Beiträge). Dieser Beitrag wurde nicht übernommen.`);
   if (!store.save(board)) return showReceive(c, `${SAVE_FAILED} Der Beitrag wurde nicht übernommen.`);
   if (r === 'added') {
     highlightFrom = before;
@@ -366,7 +368,7 @@ function adopt(b) {
     const r = codec.mergeBoard(local, b);
     if (!store.save(local)) return showError(new Error(SAVE_FAILED));
     highlightFrom = before;
-    toast(`Pinnwand zusammengeführt: ${r.added} neue Beiträge.`);
+    toast(`Pinnwand zusammengeführt: ${r.added} neue Beiträge.${fullNote(r.full)}`);
   } else {
     if (!store.save(b)) return showError(new Error(SAVE_FAILED));
     toast(`Pinnwand „${b.title}“ übernommen (${plural(b.contribs.length)}).`);
@@ -435,7 +437,7 @@ async function removeContrib(i) {
 async function mergeRun(texts) {
   reloadCurrent();
   const before = current.contribs.length;
-  const total = { added: 0, dupes: 0, foreign: 0, broken: 0 };
+  const total = { added: 0, dupes: 0, foreign: 0, broken: 0, full: 0 };
   for (const t of texts) {
     const r = await codec.mergeText(current, t);
     for (const k of Object.keys(total)) total[k] += r[k];
@@ -443,7 +445,7 @@ async function mergeRun(texts) {
   const saved = store.save(current);
   renderBoard(current, before);
   renderMergeList();
-  $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt${saved ? '' : ' – nicht gespeichert!'}`;
+  $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt${saved ? '' : ' – nicht gespeichert!'}${fullNote(total.full)}`;
 }
 async function readFiles(files) {
   try {

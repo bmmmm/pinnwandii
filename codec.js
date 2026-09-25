@@ -304,18 +304,18 @@ export async function decodeBoard(str) {
 const sameEntry = (a, b) =>
   a.name === b.name && a.text === b.text && a.sticker === b.sticker && a.img === b.img;
 
-/** Adds one contribution to a board; returns 'added' | 'dupes' | 'foreign'. */
+/** Adds one contribution to a board; returns 'added' | 'dupes' | 'foreign' | 'full'. */
 export function addContrib(board, c) {
   if (c.id !== board.id) return 'foreign';
   if (board.contribs.some((e) => sameEntry(e, c))) return 'dupes';
-  if (board.contribs.length >= LIMITS.contribs) fail('limit', `Höchstens ${LIMITS.contribs} Beiträge.`);
+  if (board.contribs.length >= LIMITS.contribs) return 'full';
   board.contribs.push({ name: c.name, text: c.text, sticker: c.sticker, img: c.img });
   return 'added';
 }
 
 /** Union of two boards' contributions (into `board`). */
 export function mergeBoard(board, other) {
-  const r = { added: 0, dupes: 0, foreign: 0 };
+  const r = { added: 0, dupes: 0, foreign: 0, full: 0 };
   for (const e of other.contribs) r[addContrib(board, { id: other.id, ...e })]++;
   return r;
 }
@@ -356,7 +356,7 @@ async function decodeCandidate(cand) {
 
 /** Merges token candidates (from extractContribs) into the board. */
 export async function mergeContribs(board, candidates) {
-  const r = { added: 0, dupes: 0, foreign: 0, broken: 0 };
+  const r = { added: 0, dupes: 0, foreign: 0, broken: 0, full: 0 };
   for (const cand of candidates) {
     const c = await decodeCandidate(cand);
     if (!c) { r.broken++; continue; }
@@ -369,20 +369,23 @@ export async function mergeContribs(board, candidates) {
  * Merges whatever a person pasted or dropped: a backup file (the board tuple
  * as JSON) or free text with contribution links. Chat exports also start
  * with "[" (a timestamp), so only text that really parses as JSON counts as
- * a backup; everything else is searched for tokens.
+ * a backup; everything else is searched for tokens. So is JSON that is no
+ * backup (Telegram exports chats as JSON); without any token it is counted
+ * as one broken item.
  */
 export async function mergeText(board, text) {
   const trimmed = text.trim();
+  let other = null;
+  let json = false;
   if (/^[[{]/.test(trimmed) && /[\]}]$/.test(trimmed)) {
-    let parsed;
-    try { parsed = JSON.parse(trimmed); } catch { parsed = undefined; }
-    if (parsed !== undefined) {
-      try {
-        return { broken: 0, ...mergeBoard(board, validate('board', parsed)) };
-      } catch {
-        return { added: 0, dupes: 0, foreign: 0, broken: 1 };
-      }
-    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      json = true;
+      other = validate('board', parsed);
+    } catch { /* no backup: search it for tokens */ }
   }
-  return mergeContribs(board, extractContribs(text));
+  if (other) return { broken: 0, ...mergeBoard(board, other) };
+  const cands = extractContribs(text);
+  if (json && cands.length === 0) return { added: 0, dupes: 0, foreign: 0, broken: 1, full: 0 };
+  return mergeContribs(board, cands);
 }
