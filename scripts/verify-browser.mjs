@@ -30,7 +30,8 @@ const CHROME = process.env.CHROME ?? (() => {
 })();
 const BUDGET = 1900; // MESSAGE_BUDGET in app.js
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
-for (const d of ['shots', 'downloads']) fs.mkdirSync(path.join(OUT, d), { recursive: true });
+for (const d of ['shots', 'downloads', 'guest-downloads']) fs.mkdirSync(path.join(OUT, d), { recursive: true });
+let failCssFetch = false; // makes fetch('style.css') answer 404 (the page's own <link> still loads)
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -51,6 +52,7 @@ async function newPage(ctx, label) {
     page.on('request', (r) => {
       const u = new URL(r.url());
       if (u.origin !== ORIGIN) return r.continue();
+      if (failCssFetch && r.resourceType() === 'fetch' && u.pathname === '/style.css') return r.respond({ status: 404, body: 'not found' });
       const file = path.join(REPO, u.pathname === '/' ? 'index.html' : decodeURIComponent(u.pathname));
       if (!file.startsWith(REPO) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return r.respond({ status: 404, body: 'not found' });
       r.respond({ status: 200, contentType: TYPES[path.extname(file)] ?? 'application/octet-stream', body: fs.readFileSync(file) });
@@ -169,6 +171,12 @@ try {
   check('2 link carries a sketch, version 2, no query string', !!sketchBytes(sent.img) && guestLink.includes('/#c=2.') && !guestLink.includes('?'), `${shapeCount(sketchBytes(sent.img) ?? new Uint8Array(5))} triangles, ${sketchMs} ms`);
   check(`2 whole message ≤ ${BUDGET} bytes (one Signal message)`, utf8(guestMsg) <= BUDGET, `${utf8(guestMsg)} bytes, size line "${await text(guest, '#size')}"`);
   await shot(guest, '02-write');
+  await bcdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: path.join(OUT, 'guest-downloads'), browserContextId: guestCtx.id, eventsEnabled: true });
+  await guest.evaluate(() => { navigator.canShare = () => false; }); // take the download path
+  await guest.$eval('#send-file', (b) => b.click());
+  const sendFile = path.join(OUT, 'guest-downloads', 'gruss-anna-muller.txt');
+  for (let i = 0; i < 50 && !fs.existsSync(sendFile); i++) await sleep(100);
+  check('2 "Als Datei senden": file name without combining marks', fs.existsSync(sendFile) && fs.readFileSync(sendFile, 'utf8').includes('#c=2.'), fs.readdirSync(path.join(OUT, 'guest-downloads')).join(', '));
 
   // long text: fewer triangles, still one message
   await guest.evaluate(() => { window.__copied = null; navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve(); }; });
@@ -352,7 +360,38 @@ try {
   await shot(filePage, '06-file');
   await filePage.close();
   await page.bringToFront();
+  // the preview's blob URL is released (60 s timer, sped up here)
+  await page.evaluate(() => {
+    window.__revoked = [];
+    const revoke = URL.revokeObjectURL.bind(URL);
+    URL.revokeObjectURL = (u) => { window.__revoked.push(u); revoke(u); };
+    const later = window.setTimeout.bind(window);
+    window.setTimeout = (fn, ms, ...a) => later(fn, ms === 60_000 ? 300 : ms, ...a);
+  });
+  const popup2 = new Promise((r) => browser.once('targetcreated', (t) => r(t)));
+  await page.click('#build-preview');
+  const previewUrl = (await popup2).url();
+  await sleep(600);
+  check('6 preview blob URL is revoked', previewUrl.startsWith('blob:') && (await page.evaluate(() => window.__revoked)).includes(previewUrl), previewUrl);
+  for (const p of await browser.pages()) if (p.url().startsWith('blob:')) await p.close();
+  await page.bringToFront();
   await page.click('#dlg-build [data-close]');
+  if (LOCAL) {
+    const cssPage = await newPage(org, 'css404');
+    await cssPage.goto(`${ORIGIN}/#o=${boardId}`, { waitUntil: 'networkidle0' });
+    failCssFetch = true;
+    await cssPage.click('#toolbar [data-act=build]');
+    await waitFor(cssPage, () => document.querySelector('#dlg-build').open);
+    await sleep(300);
+    await cssPage.evaluate(() => { document.querySelector('#toast').textContent = ''; });
+    await cssPage.$eval('#build-download', (b) => b.click());
+    await sleep(500);
+    const cssToast = await text(cssPage, '#toast');
+    failCssFetch = false;
+    check('6 stylesheet 404: toast instead of a page without styles', cssToast === 'Stylesheet nicht ladbar, bitte Seite neu laden.', cssToast);
+    await cssPage.close();
+    await page.bringToFront();
+  }
 
   // ---- 7. viewer link and broken link --------------------------------------------------
   const viewLink = adminLink.replace('#b=', '#v=');
@@ -427,6 +466,38 @@ try {
   check('11 full board: receive view says so, board unchanged', await visible(fullPage, '#view-receive') && hintFull.includes('voll') && await fullPage.evaluate((id) => JSON.parse(localStorage.getItem(`pinnwandii:${id}`))[4].length === 500, fullBoard.id), hintFull);
   await fullPage.close();
 
+  // ---- 12. a late settings "change" lands on the board it was made for -------------------
+  const mkBoard = (title) => ({ id: newId(), title, preset: 'p', hue: 200, contribs: [] });
+  const [bA, bB] = [mkBoard('Erste'), mkBoard('Zweite')];
+  const multiCtx = await browser.createBrowserContext();
+  const multi = await newPage(multiCtx, 'multi');
+  for (const b of [bB, bA]) {
+    await multi.goto(`${ORIGIN}/#b=${await encodeBoard(b)}`, { waitUntil: 'networkidle0' });
+    await waitFor(multi, (id) => location.hash === `#o=${id}`, b.id);
+  }
+  await multi.click('#toolbar [data-act=settings]');
+  await waitFor(multi, () => document.querySelector('#dlg-settings').open);
+  await multi.evaluate(() => {
+    const t = document.querySelector('#settings-form input[name=title]');
+    t.value = 'Erste, neu';
+    t.dispatchEvent(new Event('input', { bubbles: true })); // typed, not yet committed
+  });
+  await multi.evaluate((id) => { location.hash = `#o=${id}`; }, bB.id);
+  await waitFor(multi, () => !document.querySelector('#dlg-settings').open && document.title === 'Zweite');
+  await multi.evaluate(() => document.querySelector('#settings-form input[name=title]').dispatchEvent(new Event('change', { bubbles: true })));
+  const titles = await multi.evaluate((a, b) => [a, b].map((id) => JSON.parse(localStorage.getItem(`pinnwandii:${id}`))[1]), bA.id, bB.id);
+  check('12 late settings change: saved on its own board, other board untouched', titles[0] === 'Erste, neu' && titles[1] === 'Zweite' && (await text(multi, '#title')) === 'Zweite', JSON.stringify(titles));
+  await multi.close();
+
+  // ---- 13. a browser without Compression Streams gets a clear message ------------------
+  const oldCtx = await browser.createBrowserContext();
+  const old = await newPage(oldCtx, 'old');
+  await old.evaluateOnNewDocument(() => { delete window.CompressionStream; delete window.DecompressionStream; });
+  await old.goto(inviteLink, { waitUntil: 'networkidle0' });
+  const oldText = await text(old, '#error-text');
+  check('13 no Compression Streams: "zu alt" message', await visible(old, '#view-error') && oldText.includes('zu alt'), oldText);
+  await old.close();
+
   // ---- start page lists saved boards -------------------------------------------------------
   await page.bringToFront();
   await page.goto(`${ORIGIN}/`, { waitUntil: 'networkidle0' });
@@ -435,7 +506,8 @@ try {
   check('script completed without exception', false, e.stack);
 } finally {
   // ---- 8. console --------------------------------------------------------------------------
-  const bad = consoleLog.filter((l) => /CSP|Refused|Error|error|pageerror|requestfailed/.test(l));
+  // [css404] provokes its 404 on purpose
+  const bad = consoleLog.filter((l) => !l.startsWith('[css404]') && /CSP|Refused|Error|error|pageerror|requestfailed/.test(l));
   check('8 console clean (CSP|Refused|Error)', bad.length === 0, bad.join(' | ').slice(0, 800));
   await browser.close();
   const fails = results.filter(([ok]) => !ok).length;

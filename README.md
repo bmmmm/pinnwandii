@@ -29,7 +29,9 @@ Three roles, one static page:
    JavaScript, photos embedded.
 
 The organizer is the database. Nothing is ever written to a server, and the
-invitation link never reveals who has already replied.
+invitation link never reveals who has already replied. Merging is a union:
+a post deleted on one device comes back when an older backup or admin link
+that still contains it is merged later, so delete it again after merging.
 
 ## Links and limits
 

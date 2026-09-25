@@ -133,7 +133,7 @@ function download(blob, name) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
 }
-const slug = (s) => s.normalize('NFKD').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'gruss';
+const slug = (s) => s.normalize('NFKD').replace(/\p{M}+/gu, '').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'gruss';
 
 // ---- theme and cards --------------------------------------------------------
 
@@ -225,9 +225,13 @@ function show(id) {
   window.scrollTo(0, 0);
 }
 
+// Safari before 16.4 and other old browsers cannot pack or read any link.
+const TOO_OLD = typeof CompressionStream === 'undefined' || typeof DecompressionStream === 'undefined';
+
 async function route() {
   const m = /^#([oicbv])=(.*)$/.exec(location.hash);
   try {
+    if (TOO_OLD) return showError(new Error('Dieser Browser ist zu alt für die Pinnwand. Bitte aktualisiere ihn oder öffne den Link in einem anderen Browser.'));
     if (!m) return showStart();
     const [, mode, val] = m;
     if (mode === 'o') return showBoard(val);
@@ -480,7 +484,11 @@ $('#merge-text').addEventListener('drop', async (e) => {
 // ---- static page ------------------------------------------------------------
 
 let cssText = null;
-const loadCss = async () => (cssText ??= await fetch('style.css').then((r) => r.text()));
+const CSS_FAILED = 'Stylesheet nicht ladbar, bitte Seite neu laden.';
+const loadCss = async () => (cssText ??= await fetch('style.css').then((r) => {
+  if (!r.ok) throw new Error(`style.css: HTTP ${r.status}`);
+  return r.text();
+}));
 
 function buildStaticPage(board, css) {
   const doc = document.implementation.createHTMLDocument(board.title);
@@ -510,25 +518,38 @@ function buildStaticPage(board, css) {
   doc.body.append(header, main);
   return `<!doctype html>\n${doc.documentElement.outerHTML}`;
 }
-const pageFile = (board, css) =>
-  new File([buildStaticPage(board, css)], `pinnwand-${board.id}.html`, { type: 'text/html' });
+// The finished page as a file, or null (with a toast) if the stylesheet cannot be loaded.
+async function pageFile(board) {
+  let css;
+  try {
+    css = await loadCss();
+  } catch {
+    toast(CSS_FAILED);
+    return null;
+  }
+  return new File([buildStaticPage(board, css)], `pinnwand-${board.id}.html`, { type: 'text/html' });
+}
 
 function openBuild() {
-  loadCss().catch(() => toast('Stylesheet nicht ladbar, bitte Seite neu laden.'));
+  loadCss().catch(() => toast(CSS_FAILED));
   $('#build-share').hidden = !navigator.canShare;
   $('#dlg-build').showModal();
 }
 $('#build-preview').onclick = async () => {
-  const css = await loadCss();
-  const win = window.open(URL.createObjectURL(pageFile(current, css)), '_blank');
+  const f = await pageFile(current);
+  if (!f) return;
+  const url = URL.createObjectURL(f);
+  const win = window.open(url, '_blank');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
   if (!win) toast('Der Browser hat das Fenster blockiert: bitte herunterladen.');
 };
 $('#build-download').onclick = async () => {
-  const f = pageFile(current, await loadCss());
-  download(f, f.name);
+  const f = await pageFile(current);
+  if (f) download(f, f.name);
 };
 $('#build-share').onclick = async () => {
-  const f = pageFile(current, await loadCss());
+  const f = await pageFile(current);
+  if (!f) return;
   if (canShareFiles([f])) await shareFiles([f]);
   else toast('Dateien teilen geht hier nicht: bitte herunterladen.');
 };
@@ -536,25 +557,30 @@ $('#build-share').onclick = async () => {
 // ---- settings ---------------------------------------------------------------
 
 const settingsForm = $('#settings-form');
+let settingsFor = null; // id of the board the settings dialog was opened for
 function openSettings() {
+  settingsFor = current.id;
   field(settingsForm, 'title').value = current.title;
   field(settingsForm, 'preset').value = current.preset;
   field(settingsForm, 'hue').value = current.hue;
   $('#admin-note').textContent = '';
   $('#dlg-settings').showModal();
 }
-function applySettingsForm() {
-  current.title = field(settingsForm, 'title').value.trim() || current.title;
-  current.preset = field(settingsForm, 'preset').value;
-  current.hue = Number(field(settingsForm, 'hue').value);
+function applySettingsForm(b = current) {
+  b.title = field(settingsForm, 'title').value.trim() || b.title;
+  b.preset = field(settingsForm, 'preset').value;
+  b.hue = Number(field(settingsForm, 'hue').value);
 }
 bindThemeInputs(settingsForm, () => { if (current) applySettingsForm(); });
+// A text field commits on blur, which can come after a route change closed
+// the dialog: the edit belongs to the board the dialog was opened for, not
+// to the one shown by then.
 settingsForm.addEventListener('change', () => {
-  if (!current) return;
-  reloadCurrent();
-  applySettingsForm();
-  store.save(current);
-  renderBoard(current);
+  const b = current?.id === settingsFor ? reloadCurrent() : store.load(settingsFor);
+  if (!b) return;
+  applySettingsForm(b);
+  store.save(b);
+  if (b === current) renderBoard(current);
 });
 settingsForm.addEventListener('submit', (e) => e.preventDefault());
 $('#admin-link').onclick = async () => {
