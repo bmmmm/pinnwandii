@@ -12,6 +12,8 @@ const BASE = location.href.split('#')[0];
 const DEFAULT_THEME = { title: 'Pinnwand', preset: 'p', hue: 210 };
 const KB = (n) => `${(n / 1024).toFixed(1).replace('.', ',')} KB`;
 const plural = (n) => (n === 1 ? '1 Beitrag' : `${n} Beiträge`);
+const SAVE_FAILED = 'Speichern nicht möglich: Speicher voll oder gesperrt. Lade eine Sicherung herunter.';
+const entryKey = (e) => JSON.stringify([e.name, e.text, e.sticker, e.img]);
 
 function h(tag, props = {}, ...kids) {
   const e = document.createElement(tag);
@@ -62,8 +64,10 @@ const store = {
     try {
       localStorage.setItem(this.key(board.id), JSON.stringify(codec.toTuple('board', board)));
       localStorage.setItem('pinnwandii:last', board.id);
+      return true;
     } catch {
-      toast('Speichern nicht möglich: Speicher voll oder gesperrt. Lade eine Sicherung herunter.');
+      toast(SAVE_FAILED);
+      return false;
     }
   },
   remove(id) {
@@ -187,6 +191,26 @@ function renderWall(board, doc = document) {
 let current = null; // board shown in the organizer view
 let highlightFrom = Infinity; // index of the first card to highlight on next render
 
+// Other tabs (a #c= link opened from a messenger) save the same board, so
+// storage is the source of truth: reload before every change and follow
+// saves made elsewhere. Unsaved slider/title edits in an open settings
+// dialog are kept on top of the fresh copy.
+function reloadCurrent() {
+  if (!current) return null;
+  const fresh = store.load(current.id);
+  if (!fresh) return current;
+  if ($('#dlg-settings').open) Object.assign(fresh, { title: current.title, preset: current.preset, hue: current.hue });
+  current = fresh;
+  return current;
+}
+window.addEventListener('storage', (e) => {
+  if (!current || e.key !== store.key(current.id)) return;
+  reloadCurrent();
+  applyTheme(current);
+  renderBoard(current);
+  if ($('#dlg-merge').open) renderMergeList();
+});
+
 function show(id) {
   $$('main > section').forEach((s) => { s.hidden = s.id !== id; });
   $$('dialog[open]').forEach((d) => d.close());
@@ -244,7 +268,7 @@ $('#new-form').addEventListener('submit', (e) => {
   } catch (err) {
     return toast(err.message);
   }
-  store.save(board);
+  if (!store.save(board)) return;
   f.reset();
   location.hash = `#o=${board.id}`;
 });
@@ -257,10 +281,10 @@ $('#restore').addEventListener('change', async (e) => {
     const local = store.load(b.id);
     if (local) {
       const r = codec.mergeBoard(local, b);
-      store.save(local);
+      if (!store.save(local)) return;
       toast(`Sicherung zusammengeführt: ${r.added} neue Beiträge.`);
     } else {
-      store.save(b);
+      if (!store.save(b)) return;
       toast(`Pinnwand „${b.title}“ geladen (${plural(b.contribs.length)}).`);
     }
     location.hash = `#o=${b.id}`;
@@ -305,16 +329,20 @@ async function renderBoard(board, newFrom = Infinity) {
 }
 const adminLink = async (board) => `${BASE}#b=${await codec.encodeBoard(board)}`;
 
+function showReceive(c, hint) {
+  applyTheme(DEFAULT_THEME);
+  $('#receive-card').replaceChildren(renderCard(c, 0));
+  $('#receive-hint').textContent = hint;
+  show('view-receive');
+}
 function receive(c) {
   const board = store.load(c.id);
   if (!board) {
-    applyTheme(DEFAULT_THEME);
-    $('#receive-card').replaceChildren(renderCard(c, 0));
-    return show('view-receive');
+    return showReceive(c, 'Diese Pinnwand liegt nicht auf diesem Gerät. Öffne zuerst deinen Admin-Link oder lade auf der Startseite deine Sicherung, dann tippe diesen Link noch einmal an.');
   }
   const before = board.contribs.length;
   const r = codec.addContrib(board, c);
-  store.save(board);
+  if (!store.save(board)) return showReceive(c, `${SAVE_FAILED} Der Beitrag wurde nicht übernommen.`);
   if (r === 'added') {
     highlightFrom = before;
     toast(`Beitrag von ${c.name} übernommen (${board.contribs.length}).`);
@@ -329,11 +357,11 @@ function adopt(b) {
   if (local) {
     const before = local.contribs.length;
     const r = codec.mergeBoard(local, b);
-    store.save(local);
+    if (!store.save(local)) return showError(new Error(SAVE_FAILED));
     highlightFrom = before;
     toast(`Pinnwand zusammengeführt: ${r.added} neue Beiträge.`);
   } else {
-    store.save(b);
+    if (!store.save(b)) return showError(new Error(SAVE_FAILED));
     toast(`Pinnwand „${b.title}“ übernommen (${plural(b.contribs.length)}).`);
   }
   location.replace(`#o=${b.id}`);
@@ -389,23 +417,26 @@ function renderMergeList() {
 async function removeContrib(i) {
   const c = current.contribs[i];
   if (!c || !(await confirmDialog(`Beitrag von ${c.name} löschen?`))) return;
-  current.contribs.splice(i, 1);
+  reloadCurrent();
+  const idx = current.contribs.findIndex((e) => entryKey(e) === entryKey(c));
+  if (idx >= 0) current.contribs.splice(idx, 1);
   store.save(current);
   renderBoard(current);
   renderMergeList();
 }
 
 async function mergeRun(texts) {
+  reloadCurrent();
   const before = current.contribs.length;
   const total = { added: 0, dupes: 0, foreign: 0, broken: 0 };
   for (const t of texts) {
     const r = await codec.mergeText(current, t);
     for (const k of Object.keys(total)) total[k] += r[k];
   }
-  store.save(current);
+  const saved = store.save(current);
   renderBoard(current, before);
   renderMergeList();
-  $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt`;
+  $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt${saved ? '' : ' – nicht gespeichert!'}`;
 }
 async function readFiles(files) {
   try {
@@ -503,12 +534,19 @@ function openSettings() {
   $('#admin-note').textContent = '';
   $('#dlg-settings').showModal();
 }
-bindThemeInputs(settingsForm, () => {
+function applySettingsForm() {
   current.title = field(settingsForm, 'title').value.trim() || current.title;
   current.preset = field(settingsForm, 'preset').value;
   current.hue = Number(field(settingsForm, 'hue').value);
+}
+bindThemeInputs(settingsForm, () => { if (current) applySettingsForm(); });
+settingsForm.addEventListener('change', () => {
+  if (!current) return;
+  reloadCurrent();
+  applySettingsForm();
+  store.save(current);
+  renderBoard(current);
 });
-settingsForm.addEventListener('change', () => store.save(current));
 settingsForm.addEventListener('submit', (e) => e.preventDefault());
 $('#admin-link').onclick = async () => {
   const link = await adminLink(current);
@@ -531,11 +569,11 @@ $('#delete-board').onclick = async () => {
 // ---- write (invitation) -----------------------------------------------------
 
 const writeForm = $('#write-form');
-let write = null; // { invite, photo, link, timer, pending }
+let write = null; // { invite, photo, link, timer, pending, shrinking, error }
 
 function showWrite(invite) {
   current = null;
-  write = { invite, photo: '', link: '', timer: 0, pending: null };
+  write = { invite, photo: '', link: '', timer: 0, pending: null, shrinking: null, error: '' };
   applyTheme(invite);
   writeForm.reset();
   $('#sticker-row').replaceChildren(...STICKERS.map((s) => {
@@ -567,6 +605,8 @@ async function updateWrite() {
   $('#count').textContent = field(writeForm, 'text').value.length;
   $('#preview').replaceChildren(renderCard({ ...c, name: c.name || 'Dein Name', text: c.text || 'Dein Gruß' }, 0));
   write.link = '';
+  write.pending = null;
+  write.error = '';
   $('#write-link').value = '';
   $('#size').textContent = '';
   if (!c.name || !c.text) return;
@@ -578,13 +618,24 @@ async function updateWrite() {
     $('#write-link').value = write.link;
     $('#size').textContent = `Link: ${KB(write.link.length)}`;
   } catch (e) {
-    if (write.pending === pending) $('#size').textContent = e.message;
+    if (write.pending !== pending) return;
+    write.error = e.message;
+    $('#size').textContent = e.message;
   }
 }
 const shareTextFor = () => `Glückwunsch von ${currentContrib().name} für „${write.invite.title}“: ${write.link}`;
+// Waits for a photo still being shrunk and for the debounced recompute, so
+// the link always matches what the form shows right now.
 async function ensureLink() {
-  if (!write.link && write.pending) await write.pending.catch(() => {});
-  if (!write.link) toast('Bitte Name und Gruß ausfüllen.');
+  if (write.shrinking) await write.shrinking.catch(() => {});
+  if (write.timer) {
+    clearTimeout(write.timer);
+    write.timer = 0;
+    await updateWrite();
+  } else if (write.pending) {
+    await write.pending.catch(() => {});
+  }
+  if (!write.link) toast(write.error || 'Bitte Name und Gruß ausfüllen.');
   return !!write.link;
 }
 function sent() {
@@ -601,22 +652,25 @@ writeForm.addEventListener('input', (e) => {
     $('#write-note').textContent = '';
   }
   clearTimeout(write.timer);
-  write.timer = setTimeout(updateWrite, 300);
+  write.timer = setTimeout(() => { write.timer = 0; updateWrite(); }, 300);
 });
 field(writeForm, 'photo').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file) return;
   $('#write-note').textContent = 'Foto wird verkleinert …';
+  const shrinking = (write.shrinking = shrinkImage(file));
   try {
-    write.photo = await shrinkImage(file);
+    write.photo = await shrinking;
     field(writeForm, 'url').value = '';
     $('#write-note').textContent = 'Foto übernommen.';
   } catch (err) {
     write.photo = '';
     $('#write-note').textContent = err.message;
+  } finally {
+    if (write.shrinking === shrinking) write.shrinking = null;
   }
-  updateWrite();
+  await updateWrite();
 });
 writeForm.addEventListener('submit', async (e) => {
   e.preventDefault();

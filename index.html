@@ -4,6 +4,8 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- style-src allows inline styles because the "Vorschau" opens the built page as a blob: URL, and
+     blob: documents inherit this policy; the built page relies on its own <style> and style attributes. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src https: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Pinnwand</title>
 <link rel="icon" href="data:,">
@@ -71,7 +73,7 @@
 
 <section id="view-receive" hidden>
   <div class="wall" id="receive-card"></div>
-  <p class="panel">Diese Pinnwand liegt nicht auf diesem Gerät. Öffne zuerst deinen Admin-Link oder lade auf der Startseite deine Sicherung, dann tippe diesen Link noch einmal an.</p>
+  <p class="panel" id="receive-hint"></p>
 </section>
 
 <section id="view-error" hidden>
