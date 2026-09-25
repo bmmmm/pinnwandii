@@ -54,6 +54,7 @@ async function newPage(ctx, label) {
   page.on('console', (m) => consoleLog.push(`[${label}] ${m.type()}: ${m.text()}`));
   page.on('pageerror', (e) => consoleLog.push(`[${label}] pageerror: ${e.message}`));
   page.on('requestfailed', (r) => consoleLog.push(`[${label}] requestfailed: ${r.url().split('#')[0]} ${r.failure()?.errorText}`));
+  page.on('response', (r) => { if (r.status() >= 400) consoleLog.push(`[${label}] HTTP ${r.status()} for ${r.url().slice(0, 100)}`); }); // names what "Failed to load resource" leaves out
   await page.setRequestInterception(true);
   page.on('request', (r) => {
     const u = new URL(r.url());

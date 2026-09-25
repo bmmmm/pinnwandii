@@ -727,9 +727,12 @@ function buildStaticPage(board, css, { script = '', hash = '', online = null } =
     + (script ? `; frame-src ${FRAME_SRC}; script-src ${hash}; base-uri 'none'` : '');
   const title = doc.createElement('title');
   title.textContent = board.title;
+  const icon = doc.createElement('link'); // hosted, the page would ask the site's root for /favicon.ico
+  icon.rel = 'icon';
+  icon.href = 'data:,';
   const style = doc.createElement('style');
   style.textContent = css;
-  doc.head.replaceChildren(charset, viewport, csp, title, style);
+  doc.head.replaceChildren(charset, viewport, csp, title, icon, style);
   doc.body.dataset.preset = board.preset;
   doc.body.style.setProperty('--hue', board.hue);
   const header = doc.createElement('header');
