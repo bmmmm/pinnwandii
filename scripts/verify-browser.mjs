@@ -14,7 +14,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { decodeContrib, encodeBoard, encodeContrib, newId } from '../codec.js';
+import { decodeContrib, encodeBoard, encodeContrib, newId, toBase64 } from '../codec.js';
+import { encodeJpeg } from '../jpeg.js';
 
 const require = createRequire(path.join(process.env.PUPPETEER_DIR ?? process.cwd(), 'x.js'));
 const puppeteer = require('puppeteer-core');
@@ -403,7 +404,7 @@ try {
   for (let i = 0; i < 50 && !fs.existsSync(htmlPath); i++) await sleep(100);
   check('6 html downloaded', fs.existsSync(htmlPath), htmlPath);
   const html = fs.readFileSync(htmlPath, 'utf8');
-  check('6 html file: doctype, CSP meta, no <script', html.startsWith('<!doctype html>') && html.includes('Content-Security-Policy') && !/<script/i.test(html));
+  check('6 html file: doctype, CSP meta, no <script, no edit buttons', html.startsWith('<!doctype html>') && html.includes('Content-Security-Policy') && !/<script/i.test(html) && !html.includes('class="edit"'));
   const filePage = await org.newPage();
   await filePage.goto(`file://${htmlPath}`, { waitUntil: 'load' });
   await waitFor(filePage, () => document.querySelector('.card img')?.complete).catch(() => {}); // lazy image
@@ -449,7 +450,7 @@ try {
   await dev2.bringToFront();
   await dev2.goto(viewLink, { waitUntil: 'networkidle0' });
   await sleep(200);
-  check('7 #v= viewer: 4 cards, no toolbar', (await cardCount(dev2)) === 4 && !(await visible(dev2, '#toolbar')));
+  check('7 #v= viewer: 4 cards, no toolbar, no edit buttons', (await cardCount(dev2)) === 4 && !(await visible(dev2, '#toolbar')) && !(await dev2.$('#wall .card .edit')));
   await dev2.goto(adminLink.slice(0, -40), { waitUntil: 'networkidle0' });
   await sleep(200);
   const errText = await text(dev2, '#error-text');
@@ -548,6 +549,77 @@ try {
   const oldText = await text(old, '#error-text');
   check('13 no Compression Streams: "zu alt" message', await visible(old, '#view-error') && oldText.includes('zu alt'), oldText);
   await old.close();
+
+  // ---- 14. curating: edit, remove photo, move, delete; merging again changes nothing -----
+  const cur = { id: newId(), title: 'Kuratieren', preset: 'p', hue: 90, contribs: [], deleted: [] };
+  const px = new Uint8Array(32 * 24 * 4).map((_, i) => (i % 4 === 3 ? 255 : (i * 13) & 255));
+  const pic = 'data:image/jpeg;base64,' + toBase64(encodeJpeg(px, 32, 24, 50));
+  const curToks = await Promise.all([['Anna', pic], ['Ben', ''], ['Cleo', ''], ['Dora', '']].map(([name, img]) => encodeContrib({ id: cur.id, name, text: `Gruß von ${name}`, sticker: '', img })));
+  const curChat = curToks.map((t, i) => `[25.09.26, 13:0${i}] G${i}: ${ORIGIN}/#c=${t}`).join('\n');
+  const curCtx = await browser.createBrowserContext();
+  const cp = await newPage(curCtx, 'cur');
+  await cp.goto(`${ORIGIN}/#b=${await encodeBoard(cur)}`, { waitUntil: 'networkidle0' });
+  await waitFor(cp, (id) => location.hash === `#o=${id}`, cur.id);
+  const pasteChat = async () => {
+    await cp.click('#toolbar [data-act=merge]');
+    await waitFor(cp, () => document.querySelector('#dlg-merge').open);
+    await setValue(cp, '#merge-text', curChat);
+    await cp.evaluate(() => { document.querySelector('#merge-result').textContent = ''; });
+    await cp.click('#merge-go');
+    await waitFor(cp, () => document.querySelector('#merge-result').textContent.length > 0);
+    const r = await text(cp, '#merge-result');
+    await cp.click('#dlg-merge [data-close]');
+    return r;
+  };
+  check('14 four posts collected', (await pasteChat()) === '4 übernommen, 0 doppelt, 0 fremde Pinnwand, 0 defekt');
+  const openCard = async (name) => {
+    await cp.$eval(`#wall .card button.edit[title="Beitrag von ${name} bearbeiten"]`, (b) => b.click());
+    await waitFor(cp, () => document.querySelector('#dlg-card').open);
+  };
+  await openCard('Ben');
+  await shot(cp, '14-card-dialog');
+  await setValue(cp, '#card-form textarea[name=text]', 'Gruß von Ben, korrigiert');
+  await cp.$eval('#card-stickers button:nth-child(3)', (b) => b.click());
+  await cp.$eval('#card-save', (b) => b.click());
+  await openCard('Anna');
+  const photoShown = await visible(cp, '#card-nophoto');
+  await cp.$eval('#card-form input[name=nophoto]', (b) => b.click());
+  await cp.$eval('#card-save', (b) => b.click());
+  await openCard('Dora');
+  await cp.$eval('#card-earlier', (b) => b.click());
+  await cp.$eval('#card-earlier', (b) => b.click()); // twice: Dora ends up before Ben
+  await cp.$eval('#dlg-card [data-close]', (b) => b.click());
+  await openCard('Cleo');
+  await cp.$eval('#card-delete', (b) => b.click());
+  await waitFor(cp, () => document.querySelector('#dlg-confirm').open);
+  await cp.$eval('#confirm-ok', (b) => b.click());
+  await waitFor(cp, () => document.querySelectorAll('#wall .card').length === 3);
+  const wallState = () => cp.$$eval('#wall .card', (cs) => cs.map((c) => [c.querySelector('.name').textContent, c.querySelector('.text').textContent, c.querySelector('.sticker')?.textContent ?? '', !!c.querySelector('img')]));
+  const expected = JSON.stringify([['Anna', 'Gruß von Anna', '', false], ['Dora', 'Gruß von Dora', '', false], ['Ben', 'Gruß von Ben, korrigiert', '🎈', false]]);
+  const afterEdit = JSON.stringify(await wallState());
+  await shot(cp, '14-curated');
+  check('14 edit text + sticker, remove photo, move, delete', photoShown && afterEdit === expected, afterEdit);
+  const again = await pasteChat();
+  const afterMerge = JSON.stringify(await wallState());
+  check('14 same chat again: nothing comes back, edits stay', again === '0 übernommen, 4 doppelt, 0 fremde Pinnwand, 0 defekt' && afterMerge === expected, `${again}; ${afterMerge}`);
+  await cp.click('#toolbar [data-act=settings]');
+  await waitFor(cp, () => document.querySelector('#dlg-settings').open);
+  await cp.click('#admin-link');
+  await waitFor(cp, () => document.querySelector('#dlg-share').open);
+  const curAdmin = await cp.$eval('#share-text', (e) => e.value);
+  await cp.close();
+  const cur2Ctx = await browser.createBrowserContext();
+  const cp2 = await newPage(cur2Ctx, 'cur2');
+  await cp2.goto(curAdmin, { waitUntil: 'networkidle0' });
+  await waitFor(cp2, (id) => location.hash === `#o=${id}`, cur.id);
+  await cp2.click('#toolbar [data-act=merge]');
+  await waitFor(cp2, () => document.querySelector('#dlg-merge').open);
+  await setValue(cp2, '#merge-text', curChat);
+  await cp2.click('#merge-go');
+  await waitFor(cp2, () => document.querySelector('#merge-result').textContent.length > 0);
+  const r2dev = await text(cp2, '#merge-result');
+  check('14 second device via admin link: the deletion travels along', r2dev === '0 übernommen, 4 doppelt, 0 fremde Pinnwand, 0 defekt' && (await cardCount(cp2)) === 3, r2dev);
+  await cp2.close();
 
   // ---- start page lists saved boards -------------------------------------------------------
   await page.bringToFront();

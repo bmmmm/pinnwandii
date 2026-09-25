@@ -55,7 +55,7 @@
     <label>Dein Name <input name="name" required maxlength="60" autocomplete="name"></label>
     <label>Dein Gruß <textarea name="text" required maxlength="1000" rows="5"></textarea></label>
     <p class="count"><span id="count">0</span>/1000</p>
-    <fieldset class="stickers"><legend>Sticker</legend><div id="sticker-row"></div></fieldset>
+    <fieldset class="stickers"><legend>Sticker</legend><div class="sticker-row" id="sticker-row"></div></fieldset>
     <label class="button">Foto wählen <input type="file" name="photo" accept="image/*" hidden></label>
     <label>oder Bild-Link <input type="url" name="url" placeholder="https://…" maxlength="500"></label>
     <p class="note" id="write-note"></p>
@@ -143,6 +143,24 @@
   <div class="row">
     <button type="button" class="danger" id="delete-board">Pinnwand löschen</button>
     <button type="button" data-close>Schließen</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-card">
+  <h2>Beitrag bearbeiten</h2>
+  <form id="card-form">
+    <label>Name <input name="name" required maxlength="60"></label>
+    <label>Gruß <textarea name="text" required maxlength="1000" rows="6"></textarea></label>
+    <fieldset class="stickers"><legend>Sticker</legend><div class="sticker-row" id="card-stickers"></div></fieldset>
+    <div id="card-photo"></div>
+    <label class="check" id="card-nophoto"><input type="checkbox" name="nophoto"> Foto entfernen</label>
+  </form>
+  <div class="row">
+    <button type="button" class="primary" id="card-save">Speichern</button>
+    <button type="button" id="card-earlier">Nach vorn</button>
+    <button type="button" id="card-later">Nach hinten</button>
+    <button type="button" class="danger" id="card-delete">Löschen</button>
+    <button type="button" data-close>Abbrechen</button>
   </div>
 </dialog>
 

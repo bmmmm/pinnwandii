@@ -29,14 +29,20 @@ Three roles, one static page:
    photo; a greeting that leaves no room at all goes without it.
 3. **Organizer** collects the replies on the merge page: paste links, paste a
    whole chat export, read the clipboard or drop the files. Duplicates,
-   foreign pinboards and truncated links are counted, not merged. Then
-   *Fertige Seite* builds the finished pinboard: one HTML file without
-   JavaScript, photos embedded.
+   foreign pinboards and truncated links are counted, not merged. Every
+   card has an edit button (✎): correct name or text, change the sticker,
+   remove the photo, move the card, delete it. Then *Fertige Seite* builds
+   the finished pinboard: one HTML file without JavaScript, photos
+   embedded.
 
 The organizer is the database. Nothing is ever written to a server, and the
-invitation link never reveals who has already replied. Merging is a union:
-a post deleted on one device comes back when an older backup or admin link
-that still contains it is merged later, so delete it again after merging.
+invitation link never reveals who has already replied. Each card remembers
+which contribution it came from (a short hash), and the board remembers
+deleted ones: pasting the same chat again, or merging an older backup or
+admin link, neither brings a deleted card back nor adds an edited one
+twice. Deletions made on another device travel with its admin link or
+backup; where both devices edited the same card, the device you merge
+into keeps its version.
 
 ## Links and limits
 
@@ -51,9 +57,10 @@ that still contains it is merged later, so delete it again after merging.
 Tokens are `3.<base64url>` of `u32 len | zlib(JSON) | photo bytes…`. The
 zlib checksum turns a copy error into a clear message instead of a garbled
 card. Older tokens are still read: version 1 carried JPEGs of up to 24 KB,
-version 2 photo sketches (translucent triangles, `sketch.js`). Hard limits
+version 2 photo sketches (translucent triangles, `sketch.js`); boards from
+before version 3 get their card origins on loading. Hard limits
 (`codec.js`): title 80, name 60, text 1000, sticker 8 code points, photo
-28 KB, 500 contributions, token 200 000 chars.
+28 KB, 500 contributions, 2000 remembered deletions, token 200 000 chars.
 
 ## Scale path
 

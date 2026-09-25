@@ -15,7 +15,6 @@ const KB = (n) => `${(n / 1024).toFixed(1).replace('.', ',')} KB`;
 const plural = (n) => (n === 1 ? '1 Beitrag' : `${n} Beiträge`);
 const SAVE_FAILED = 'Speichern nicht möglich: Speicher voll oder gesperrt. Lade eine Sicherung herunter.';
 const fullNote = (n) => (n ? ` ${n} nicht übernommen: Pinnwand voll (höchstens ${codec.LIMITS.contribs}).` : '');
-const entryKey = (e) => JSON.stringify([e.name, e.text, e.sticker, e.img]);
 // Signal (Android, Desktop) sends text over 2048 UTF-8 bytes as an attachment,
 // and the link arrives cut off; Telegram splits at 4096 characters. The whole
 // message stays below that, with room for a few words added by hand.
@@ -273,6 +272,7 @@ $('#new-form').addEventListener('submit', (e) => {
     preset: field(f, 'preset').value,
     hue: Number(field(f, 'hue').value),
     contribs: [],
+    deleted: [],
   };
   try {
     codec.validate('board', codec.toTuple('board', board));
@@ -328,6 +328,12 @@ function showView(board) {
 async function renderBoard(board, newFrom = Infinity) {
   const wall = renderWall(board);
   const cards = [...wall.children];
+  if (board === current) {
+    cards.forEach((card, i) => {
+      const { origin, name } = board.contribs[i];
+      card.append(h('button', { type: 'button', className: 'edit', textContent: '✎', title: `Beitrag von ${name} bearbeiten`, onclick: () => openCard(origin) }));
+    });
+  }
   cards.slice(newFrom).forEach((c) => c.classList.add('new'));
   $('#wall').replaceChildren(...cards);
   $('#empty').hidden = board.contribs.length > 0 || board !== current;
@@ -423,19 +429,98 @@ function renderMergeList() {
     h('span', { className: 'who', textContent: c.name }),
     count.get(c.name) > 1 ? h('span', { className: 'dup', textContent: 'Name doppelt' }) : '',
     h('span', { className: 'snippet', textContent: c.text }),
-    h('button', { type: 'button', className: 'x', textContent: '✕', title: 'Beitrag löschen', onclick: () => removeContrib(i) }),
+    h('button', { type: 'button', className: 'x', textContent: '✕', title: 'Beitrag löschen', onclick: () => removeContrib(c.origin) }),
   )));
 }
-async function removeContrib(i) {
-  const c = current.contribs[i];
-  if (!c || !(await confirmDialog(`Beitrag von ${c.name} löschen?`))) return;
+// Deleting records the post's origin, so merging its link again does not bring it back.
+async function removeContrib(origin) {
+  const c = current.contribs.find((e) => e.origin === origin);
+  if (!c || !(await confirmDialog(`Beitrag von ${c.name} löschen?`))) return false;
   reloadCurrent();
-  const idx = current.contribs.findIndex((e) => entryKey(e) === entryKey(c));
-  if (idx >= 0) current.contribs.splice(idx, 1);
+  codec.deletePost(current, origin);
   store.save(current);
   renderBoard(current);
-  renderMergeList();
+  if ($('#dlg-merge').open) renderMergeList();
+  return true;
 }
+
+// ---- card dialog: curate one post ---------------------------------------------
+
+let cardFor = null; // origin of the post being edited
+function stickerRow(row, selected, onChange) {
+  row.replaceChildren(...STICKERS.map((s) => {
+    const b = h('button', { type: 'button', textContent: s });
+    b.setAttribute('aria-pressed', String(s === selected));
+    b.onclick = () => {
+      const on = b.getAttribute('aria-pressed') === 'true';
+      $$('button', row).forEach((x) => x.setAttribute('aria-pressed', 'false'));
+      b.setAttribute('aria-pressed', String(!on));
+      onChange?.();
+    };
+    return b;
+  }));
+}
+const cardForm = $('#card-form');
+function cardIndex() {
+  reloadCurrent();
+  return current ? current.contribs.findIndex((e) => e.origin === cardFor) : -1;
+}
+function openCard(origin) {
+  cardFor = origin;
+  const i = cardIndex();
+  if (i < 0) return;
+  const c = current.contribs[i];
+  field(cardForm, 'name').value = c.name;
+  field(cardForm, 'text').value = c.text;
+  field(cardForm, 'nophoto').checked = false;
+  stickerRow($('#card-stickers'), c.sticker);
+  // a sticker the guest typed in is kept unless another one is picked
+  if (c.sticker && !STICKERS.includes(c.sticker)) $('#card-stickers').dataset.keep = c.sticker;
+  else delete $('#card-stickers').dataset.keep;
+  $('#card-photo').replaceChildren(c.img ? h('img', { src: codec.imgSrc(c.img), alt: '' }) : '');
+  $('#card-nophoto').hidden = !c.img;
+  updateMoveButtons(i);
+  $('#dlg-card').showModal();
+}
+function updateMoveButtons(i) {
+  $('#card-earlier').disabled = i <= 0;
+  $('#card-later').disabled = i < 0 || i >= current.contribs.length - 1;
+}
+$('#card-save').onclick = () => {
+  const i = cardIndex();
+  if (i < 0) return $('#dlg-card').close();
+  const c = current.contribs[i];
+  const next = {
+    name: field(cardForm, 'name').value.trim(),
+    text: field(cardForm, 'text').value.trim(),
+    sticker: $('#card-stickers [aria-pressed="true"]')?.textContent ?? $('#card-stickers').dataset.keep ?? '',
+    img: field(cardForm, 'nophoto').checked ? '' : c.img,
+  };
+  try {
+    codec.validate('contrib', [current.id, next.name, next.text, next.sticker, next.img]);
+  } catch (e) {
+    return toast(e.message);
+  }
+  Object.assign(c, next); // the origin stays: merging the original link again finds it
+  if (!store.save(current)) return;
+  renderBoard(current);
+  $('#dlg-card').close();
+};
+function moveCard(step) {
+  const i = cardIndex();
+  const j = i + step;
+  if (i < 0 || j < 0 || j >= current.contribs.length) return;
+  const list = current.contribs;
+  [list[i], list[j]] = [list[j], list[i]];
+  store.save(current);
+  renderBoard(current);
+  updateMoveButtons(j);
+}
+$('#card-earlier').onclick = () => moveCard(-1);
+$('#card-later').onclick = () => moveCard(1);
+$('#card-delete').onclick = async () => {
+  if (await removeContrib(cardFor)) $('#dlg-card').close();
+};
 
 async function mergeRun(texts) {
   reloadCurrent();
@@ -611,17 +696,7 @@ function showWrite(invite) {
   write = { invite, photo: '', link: '', timer: 0, pending: null, shrinking: null, abort: null, error: '' };
   applyTheme(invite);
   writeForm.reset();
-  $('#sticker-row').replaceChildren(...STICKERS.map((s) => {
-    const b = h('button', { type: 'button', textContent: s });
-    b.setAttribute('aria-pressed', 'false');
-    b.onclick = () => {
-      const on = b.getAttribute('aria-pressed') === 'true';
-      $$('#sticker-row button').forEach((x) => x.setAttribute('aria-pressed', 'false'));
-      b.setAttribute('aria-pressed', String(!on));
-      updateWrite();
-    };
-    return b;
-  }));
+  stickerRow($('#sticker-row'), '', () => updateWrite());
   $('#write-note').textContent = '';
   updateWrite();
   show('view-write');

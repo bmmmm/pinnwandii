@@ -6,7 +6,7 @@ import { deepEqual, equal, ok, rejects, throws } from 'node:assert/strict';
 import {
   LIMITS, addContrib, decodeBoard, decodeContrib, decodeInvite, encodeBoard,
   encodeContrib, encodeInvite, extractContribs, fromBase64, fromBase64url, imgSrc,
-  mergeBoard, mergeContribs, mergeText, pack, sketchImg, toBase64, toBase64url, toTuple, unpack, validate,
+  deletePost, mergeBoard, mergeContribs, mergeText, originOf, pack, sketchImg, toBase64, toBase64url, toTuple, unpack, validate,
 } from './codec.js';
 import { MAX_SHAPES, isSketch, sketchSvg } from './sketch.js';
 import { encodeJpeg, jpegHeader, ssim, strippedLength, stripJpeg, unstripJpeg } from './jpeg.js';
@@ -21,6 +21,8 @@ const board = {
   ],
 };
 const contrib = { id: ID, name: 'Anna', text: 'Herzlichen Glückwunsch!', sticker: '🎉', img: '' };
+// A board as validate() returns it: every post with its origin, a deleted list.
+const posts = (b) => ({ ...b, contribs: b.contribs.map((c) => ({ ...c, origin: c.origin ?? originOf(c) })), deleted: b.deleted ?? [] });
 
 // Deterministic pseudo-random bytes / text so a red run is reproducible.
 function lcg(seed) {
@@ -38,7 +40,7 @@ const photo = (bytes) => 'data:image/jpeg;base64,' + toBase64(bytes);
 test('1 board round-trip keeps umlauts, emoji, newlines and RTL text', async () => {
   const tok = await encodeBoard(board);
   ok(tok.startsWith('3.'));
-  deepEqual(await decodeBoard(tok), board);
+  deepEqual(await decodeBoard(tok), posts(board));
 });
 
 test('2 photo bytes survive the binary tail unchanged', async () => {
@@ -94,7 +96,7 @@ test('6 a decompression bomb is rejected by the size cap', async () => {
 test('7 validate rejects values outside the schema', () => {
   const entry = (o) => [o.name ?? 'A', o.text ?? 'B', o.sticker ?? '', o.img ?? ''];
   const good = [ID, 'T', 'p', 0, [entry({})]];
-  deepEqual(validate('board', good), { id: ID, title: 'T', preset: 'p', hue: 0, contribs: [{ name: 'A', text: 'B', sticker: '', img: '' }] });
+  deepEqual(validate('board', good), posts({ id: ID, title: 'T', preset: 'p', hue: 0, contribs: [{ name: 'A', text: 'B', sticker: '', img: '' }] }));
   const bad = [
     ['type: not an array', 'x'],
     ['type: hue as string', [ID, 'T', 'p', '0', []]],
@@ -166,8 +168,8 @@ test('10 mergeText: chat export starting with "[" is not a backup, real backup i
   deepEqual(await mergeText(target, chat), { added: 1, dupes: 0, foreign: 0, broken: 0, full: 0 });
   const backup = JSON.stringify(toTuple('board', board));
   ok(backup.startsWith('['));
-  deepEqual(await mergeText(target, backup), { added: 3, dupes: 0, foreign: 0, broken: 0, full: 0 });
-  deepEqual(await mergeText(target, backup), { added: 0, dupes: 3, foreign: 0, broken: 0, full: 0 });
+  deepEqual(await mergeText(target, backup), { added: 3, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0 });
+  deepEqual(await mergeText(target, backup), { added: 0, dupes: 3, foreign: 0, broken: 0, full: 0, removed: 0 });
   deepEqual(await mergeText(target, '[1, 2, 3]'), { added: 0, dupes: 0, foreign: 0, broken: 1, full: 0 });
   equal(target.contribs.length, 4);
 });
@@ -202,7 +204,7 @@ test('12 version 2 sketches still ride in the tail and render as SVG from number
   equal(obj[4], -bytes.length);
   deepEqual(tail, bytes);
   const b = { ...board, contribs: [{ ...board.contribs[0], img: sketchImg(bytes) }, { ...board.contribs[1], img: photo(randomBytes(900)) }] };
-  deepEqual(await decodeBoard(await encodeBoard(b)), b);
+  deepEqual(await decodeBoard(await encodeBoard(b)), posts(b));
   const src = imgSrc(c.img);
   ok(src.startsWith('data:image/svg+xml;base64,'));
   const svg = atob(src.slice(src.indexOf(',') + 1));
@@ -272,7 +274,7 @@ test('17 a full board counts the rest instead of throwing', async () => {
   equal(addContrib(target, { ...contrib, name: 'Dora' }), 'full');
   equal(addContrib(target, { ...contrib, name: 'Anna' }), 'dupes');
   const other = { ...target, contribs: [{ name: 'Emil', text: 'y', sticker: '', img: '' }] };
-  deepEqual(mergeBoard(target, other), { added: 0, dupes: 0, foreign: 0, full: 1 });
+  deepEqual(mergeBoard(target, other), { added: 0, dupes: 0, foreign: 0, full: 1, removed: 0 });
 });
 
 test('18 photo boards, exact limits, and no foreign SVG', async () => {
@@ -284,7 +286,7 @@ test('18 photo boards, exact limits, and no foreign SVG', async () => {
     { name: 'D', text: 'd', sticker: '', img: photo(randomBytes(5000, 2)) },
     { name: 'E', text: 'e', sticker: '', img: 'https://example.org/e.jpg' },
   ] };
-  deepEqual(await decodeBoard(await encodeBoard(b)), b);
+  deepEqual(await decodeBoard(await encodeBoard(b)), posts(b));
   const full = ['n'.repeat(LIMITS.name), 't'.repeat(LIMITS.text), '🎉'.repeat(LIMITS.sticker), ''];
   const max = [ID, 'x'.repeat(LIMITS.title), 'p', 359, Array.from({ length: LIMITS.contribs }, () => full)];
   equal(validate('board', max).contribs.length, LIMITS.contribs);
@@ -373,4 +375,67 @@ test('23 ssim: 1 for identical images, lower the more they differ', () => {
   const sInv = ssim(rgba, inverted, w, h);
   ok(sNoisy < 1 && sNoisy > 0.5, `noisy ${sNoisy}`);
   ok(sInv < sNoisy && sInv < 0.2, `inverted ${sInv}`);
+});
+
+test('24 boards from before version 3 get origins; origins and deletions survive a round trip', async () => {
+  const legacy = [ID, 'T', 'p', 1, [['Anna', 'Hallo', '', ''], ['Ben', 'Hi', '🎉', '']]];
+  const b = validate('board', legacy);
+  deepEqual(b.contribs.map((e) => e.origin), [originOf({ name: 'Anna', text: 'Hallo', sticker: '', img: '' }), originOf({ name: 'Ben', text: 'Hi', sticker: '🎉', img: '' })]);
+  deepEqual(b.deleted, []);
+  // origins are stored in boards: the hash may never change
+  equal(b.contribs[0].origin, 'P5eHa8Et');
+  b.contribs[0].text = 'Hallo, bearbeitet';
+  deletePost(b, b.contribs[1].origin);
+  const t = toTuple('board', b);
+  equal(t.length, 6);
+  equal(t[4][0][4], originOf({ name: 'Anna', text: 'Hallo', sticker: '', img: '' }), 'an edit keeps the origin');
+  deepEqual(await decodeBoard(await encodeBoard(b)), b);
+  deepEqual(validate('board', JSON.parse(JSON.stringify(t))), b);
+  for (const bad of [[...t.slice(0, 5), ['x']], [...t.slice(0, 5), 'x'], [...t.slice(0, 4), [['A', 'B', '', '', 'short']], []], [...t, []], [...t.slice(0, 5), new Array(LIMITS.deleted + 1).fill('AAAAAAAA')]]) {
+    throws(() => validate('board', bad), { code: 'invalid' });
+  }
+  // an edited photo post keeps its origin through the photo tail
+  const { rgba, w, h } = testImage();
+  const withPhoto = validate('board', [ID, 'T', 'p', 1, [['Cleo', 'Foto', '', 'data:image/jpeg;base64,' + toBase64(encodeJpeg(rgba, w, h, 30))]]]);
+  const photoOrigin = withPhoto.contribs[0].origin;
+  withPhoto.contribs[0].text = 'Foto, bearbeitet';
+  equal((await decodeBoard(await encodeBoard(withPhoto))).contribs[0].origin, photoOrigin);
+  // a board object without a deleted list (created before version 3) still records deletions
+  const lone = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [{ ...withPhoto.contribs[0] }] };
+  deletePost(lone, photoOrigin);
+  deepEqual([lone.contribs.length, lone.deleted], [0, [photoOrigin]]);
+  // the deleted list keeps the newest LIMITS.deleted origins
+  const many = { ...b, deleted: Array.from({ length: LIMITS.deleted }, (_, i) => `x${String(i).padStart(7, '0')}`) };
+  deletePost(many, 'newest00');
+  equal(many.deleted.length, LIMITS.deleted);
+  equal(many.deleted.at(-1), 'newest00');
+  equal(many.deleted[0], 'x0000001');
+});
+
+test('25 merging the same links again does not bring back deleted or duplicate edited posts', async () => {
+  const toks = await Promise.all(['Anna', 'Ben', 'Cleo'].map((name) => encodeContrib({ ...contrib, name, text: `Gruß von ${name}` })));
+  const b = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [] };
+  deepEqual(await mergeContribs(b, toks), { added: 3, dupes: 0, foreign: 0, broken: 0, full: 0 });
+  b.contribs[0].text = 'Gruß von Anna, korrigiert';
+  b.contribs[2].img = '';
+  deletePost(b, b.contribs[1].origin);
+  deepEqual(await mergeContribs(b, toks), { added: 0, dupes: 3, foreign: 0, broken: 0, full: 0 });
+  deepEqual(b.contribs.map((e) => [e.name, e.text]), [['Anna', 'Gruß von Anna, korrigiert'], ['Cleo', 'Gruß von Cleo']]);
+  equal(addContrib(b, { ...contrib, name: 'Ben', text: 'Gruß von Ben' }), 'dupes');
+});
+
+test('26 two copies of a board: deletions travel, local edits win, new posts arrive', async () => {
+  const toks = await Promise.all(['Anna', 'Ben', 'Cleo'].map((name) => encodeContrib({ ...contrib, name, text: `Gruß von ${name}` })));
+  const a = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [] };
+  await mergeContribs(a, toks.slice(0, 2));
+  const b = await decodeBoard(await encodeBoard(a)); // admin link to a second device
+  b.contribs[0].text = 'Anna, auf B bearbeitet';
+  deletePost(b, b.contribs[1].origin); // Ben deleted on B
+  await mergeContribs(b, toks.slice(2)); // Cleo arrived on B
+  a.contribs[0].text = 'Anna, auf A bearbeitet';
+  deepEqual(mergeBoard(a, b), { added: 1, dupes: 1, foreign: 0, full: 0, removed: 1 });
+  deepEqual(a.contribs.map((e) => [e.name, e.text]), [['Anna', 'Anna, auf A bearbeitet'], ['Cleo', 'Gruß von Cleo']]);
+  deepEqual(a.deleted, b.deleted);
+  deepEqual(mergeBoard(b, a), { added: 0, dupes: 2, foreign: 0, full: 0, removed: 0 });
+  equal(mergeBoard(a, { ...b, id: 'zzzzzz' }).foreign, 2);
 });

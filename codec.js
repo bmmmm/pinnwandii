@@ -8,15 +8,21 @@
 // Wire format:  "<version>." + base64url( u32be(zlibLen) ++ zlib(json) ++ bins… )
 //   invite  = [id, title, preset, hue]
 //   contrib = [id, name, text, sticker, img]
-//   board   = [id, title, preset, hue, [[name, text, sticker, img], …]]
+//   board   = [id, title, preset, hue, [[name, text, sticker, img, origin], …], [deleted origin, …]]
+//             (before version 3 without origins and deleted list)
 //   img     = "" | "https://…" | <number n: the next |n| bytes of the tail>
 //             n > 0: a JPEG photo, stored without its header (jpeg.js) when
 //             this app encoded it; n < 0: a sketch from version 2 (sketch.js)
 // In memory and in storage a photo is a full JPEG data URI and a sketch
 // "sketch:<base64>"; imgSrc() turns either into an <img> source.
 // toTuple()/validate() convert between tuples and plain objects.
-// Versions: 1 JPEG photos, 2 sketches, 3 JPEGs without header. New tokens are
-// written as 3; older ones are still read.
+// Versions: 1 JPEG photos, 2 sketches, 3 JPEGs without header, origins. New
+// tokens are written as 3; older ones are still read.
+//
+// Origin: every post on a board remembers a short hash of the contribution
+// it came from, and a board remembers the origins of deleted posts. Merging
+// the same links or an older backup again therefore neither duplicates an
+// edited post nor brings back a deleted one.
 import { stripJpeg, unstripJpeg } from './jpeg.js';
 import { MAX_BYTES as SKETCH_BYTES, isSketch, sketchSvg } from './sketch.js';
 
@@ -25,7 +31,7 @@ const READABLE = ['1', '2', '3'];
 export const PRESETS = ['p', 'b', 'd'];
 export const LIMITS = Object.freeze({
   title: 80, name: 60, text: 1000, sticker: 8, url: 500,
-  photo: 28 * 1024, sketch: SKETCH_BYTES, contribs: 500, token: 200_000,
+  photo: 28 * 1024, sketch: SKETCH_BYTES, contribs: 500, deleted: 2000, token: 200_000,
   json: 512 * 1024, tail: 4 * 1024 * 1024,
 });
 
@@ -150,6 +156,7 @@ export async function unpack(str) {
 // ---- schema -----------------------------------------------------------------
 
 const ID_RE = /^[A-Za-z0-9_-]{6}$/;
+const ORIGIN_RE = /^[A-Za-z0-9_-]{8}$/;
 const URL_RE = /^https:\/\/\S+$/;
 const DATA_RE = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/;
 const SKETCH = 'sketch:';
@@ -185,6 +192,15 @@ function checkEntry(t, wire = false) {
   checkImg(img, wire);
   return { name, text, sticker, img };
 }
+// A board entry: a contribution plus its origin (missing before version 3,
+// then the post is taken as unedited and the origin computed from it).
+function checkPost(t, wire) {
+  if (!Array.isArray(t) || (t.length !== 4 && t.length !== 5)) fail('invalid', 'Beitrag: falscher Typ.');
+  const e = checkEntry(t.slice(0, 4), wire);
+  if (t.length === 5 && (typeof t[4] !== 'string' || !ORIGIN_RE.test(t[4]))) fail('invalid', 'Herkunft ungültig.');
+  e.origin = t[4] ?? (wire ? null : originOf(e));
+  return e;
+}
 function checkHead(t, len) {
   if (!Array.isArray(t) || t.length !== len) fail('invalid', 'Falscher Typ.');
   const [id, title, preset, hue] = t;
@@ -199,10 +215,16 @@ function checkHead(t, len) {
 export function validate(kind, t, { wire = false } = {}) {
   if (kind === 'invite') return checkHead(t, 4);
   if (kind === 'board') {
-    const b = checkHead(t, 5);
+    const b = checkHead(Array.isArray(t) ? t.slice(0, 5) : t, 5);
+    if (t.length > 6) fail('invalid', 'Falscher Typ.');
     if (!Array.isArray(t[4])) fail('invalid', 'Beiträge: falscher Typ.');
     if (t[4].length > LIMITS.contribs) fail('invalid', `Höchstens ${LIMITS.contribs} Beiträge.`);
-    b.contribs = t[4].map((e) => checkEntry(e, wire));
+    b.contribs = t[4].map((e) => checkPost(e, wire));
+    const deleted = t[5] ?? [];
+    if (!Array.isArray(deleted) || deleted.length > LIMITS.deleted || !deleted.every((o) => typeof o === 'string' && ORIGIN_RE.test(o))) {
+      fail('invalid', 'Gelöschte: falscher Typ.');
+    }
+    b.deleted = deleted;
     return b;
   }
   if (kind === 'contrib') {
@@ -217,13 +239,32 @@ export function toTuple(kind, o) {
   if (kind === 'invite') return [o.id, o.title, o.preset, o.hue];
   if (kind === 'contrib') return [o.id, o.name, o.text, o.sticker, o.img];
   if (kind === 'board') {
-    return [o.id, o.title, o.preset, o.hue, o.contribs.map((c) => [c.name, c.text, c.sticker, c.img])];
+    return [o.id, o.title, o.preset, o.hue, o.contribs.map((c) => [c.name, c.text, c.sticker, c.img, c.origin ?? originOf(c)]), o.deleted ?? []];
   }
   throw new Error(`unknown kind: ${kind}`);
 }
 
 export function newId() {
   return toBase64url(crypto.getRandomValues(new Uint8Array(6))).slice(0, 6);
+}
+
+/** Origin of a contribution: 48-bit hash (cyrb53) of its content, 8 characters. */
+export function originOf(c) {
+  const str = JSON.stringify([c.name, c.text, c.sticker, c.img]);
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  const bytes = new Uint8Array(6);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, h1 >>> 0);
+  view.setUint16(4, h2 & 0xffff);
+  return toBase64url(bytes);
 }
 
 // ---- photos: sketches and data URIs <-> binary tail --------------------------
@@ -246,26 +287,26 @@ export function imgSrc(img) {
 
 function splitPhotos(entries) {
   const bins = [];
-  const wired = entries.map(([name, text, sticker, img]) => {
+  const wired = entries.map(([name, text, sticker, img, ...rest]) => {
     const sketch = img.startsWith(SKETCH);
-    if (!sketch && !img.startsWith('data:')) return [name, text, sticker, img];
+    if (!sketch && !img.startsWith('data:')) return [name, text, sticker, img, ...rest];
     let bytes = fromBase64(img.slice(sketch ? SKETCH.length : img.indexOf(',') + 1));
     if (!sketch) bytes = stripJpeg(bytes) ?? bytes;
     bins.push(bytes);
-    return [name, text, sticker, sketch ? -bytes.length : bytes.length];
+    return [name, text, sticker, sketch ? -bytes.length : bytes.length, ...rest];
   });
   return [wired, bins];
 }
 function joinPhotos(entries, tail) {
   let off = 0;
-  const out = entries.map(([name, text, sticker, img]) => {
-    if (typeof img !== 'number') return [name, text, sticker, img];
+  const out = entries.map(([name, text, sticker, img, ...rest]) => {
+    if (typeof img !== 'number') return [name, text, sticker, img, ...rest];
     const n = Math.abs(img);
     let bytes = tail.subarray(off, off + n);
     off += n;
-    if (img < 0) return [name, text, sticker, SKETCH + toBase64(bytes)];
+    if (img < 0) return [name, text, sticker, SKETCH + toBase64(bytes), ...rest];
     if (bytes[0] === 1) bytes = unstripJpeg(bytes) ?? fail('broken', MESSAGES.broken); // a JPEG starts with 0xFF
-    return [name, text, sticker, 'data:image/jpeg;base64,' + toBase64(bytes)];
+    return [name, text, sticker, 'data:image/jpeg;base64,' + toBase64(bytes), ...rest];
   });
   if (off !== tail.length) fail('broken', MESSAGES.broken);
   return out;
@@ -301,32 +342,55 @@ export async function encodeBoard(b) {
   const t = toTuple('board', b);
   validate('board', t);
   const [wired, bins] = splitPhotos(t[4]);
-  return pack([...t.slice(0, 4), wired], bins);
+  return pack([...t.slice(0, 4), wired, ...t.slice(5)], bins);
 }
 export async function decodeBoard(str) {
   const { obj, tail } = await unpack(str);
   validate('board', obj, { wire: true });
-  return validate('board', [...obj.slice(0, 4), joinPhotos(obj[4], tail)]);
+  return validate('board', [...obj.slice(0, 4), joinPhotos(obj[4], tail), ...obj.slice(5)]);
 }
 
 // ---- merging ----------------------------------------------------------------
 
-const sameEntry = (a, b) =>
-  a.name === b.name && a.text === b.text && a.sticker === b.sticker && a.img === b.img;
+// Adds a post with a known origin: 'added' | 'dupes' (the board has or had
+// it, possibly edited or deleted since) | 'full'.
+function addPost(board, e) {
+  if (board.contribs.some((x) => x.origin === e.origin) || (board.deleted ??= []).includes(e.origin)) return 'dupes';
+  if (board.contribs.length >= LIMITS.contribs) return 'full';
+  board.contribs.push({ name: e.name, text: e.text, sticker: e.sticker, img: e.img, origin: e.origin });
+  return 'added';
+}
 
 /** Adds one contribution to a board; returns 'added' | 'dupes' | 'foreign' | 'full'. */
 export function addContrib(board, c) {
   if (c.id !== board.id) return 'foreign';
-  if (board.contribs.some((e) => sameEntry(e, c))) return 'dupes';
-  if (board.contribs.length >= LIMITS.contribs) return 'full';
-  board.contribs.push({ name: c.name, text: c.text, sticker: c.sticker, img: c.img });
-  return 'added';
+  return addPost(board, { ...c, origin: originOf(c) });
 }
 
-/** Union of two boards' contributions (into `board`). */
+/** Records a post as deleted, so that merging it again does not bring it back. */
+export function deletePost(board, origin) {
+  board.contribs = board.contribs.filter((e) => e.origin !== origin);
+  board.deleted ??= [];
+  if (!board.deleted.includes(origin)) board.deleted = [...board.deleted, origin].slice(-LIMITS.deleted);
+}
+
+/**
+ * Merges another copy of the same board (admin link, backup) into `board`:
+ * posts deleted there are deleted here too, posts known here stay as they
+ * are here (edits on this device win), new posts are added.
+ */
 export function mergeBoard(board, other) {
-  const r = { added: 0, dupes: 0, foreign: 0, full: 0 };
-  for (const e of other.contribs) r[addContrib(board, { id: other.id, ...e })]++;
+  const r = { added: 0, dupes: 0, foreign: 0, full: 0, removed: 0 };
+  if (other.id !== board.id) {
+    r.foreign = other.contribs.length;
+    return r;
+  }
+  for (const origin of other.deleted ?? []) {
+    const before = board.contribs.length;
+    deletePost(board, origin);
+    r.removed += before - board.contribs.length;
+  }
+  for (const e of other.contribs) r[addPost(board, { ...e, origin: e.origin ?? originOf(e) })]++;
   return r;
 }
 

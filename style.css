@@ -58,6 +58,11 @@ p { margin: 0 0 0.75rem; }
   transition: box-shadow 0.8s;
 }
 .card.new { box-shadow: 0 0 0 4px var(--accent), 0 2px 8px #0003; }
+.card { position: relative; }
+.card .edit { position: absolute; top: 0.4rem; right: 0.4rem; padding: 0.15rem 0.5rem; font-size: 1rem; line-height: 1.4; opacity: 0.85; }
+.card .edit:hover, .card .edit:focus-visible { opacity: 1; }
+#card-photo img { display: block; max-width: 10rem; border-radius: 0.5rem; margin: 0.5rem 0 0.25rem; }
+.check { display: flex; align-items: center; gap: 0.4rem; }
 [data-preset="p"] .card { background: oklch(0.93 0.06 var(--h)); color: oklch(0.25 0.03 var(--h)); }
 [data-preset="b"] .card { background: oklch(0.5 0.17 var(--h)); color: #fff; }
 [data-preset="d"] .card { background: oklch(0.38 0.11 var(--h)); color: oklch(0.96 0.02 var(--h)); }
@@ -94,7 +99,7 @@ input[type="range"] { padding: 0; border: 0; background: none; accent-color: var
 fieldset { border: 0; padding: 0; margin: 0 0 0.75rem; }
 legend { padding: 0; margin-bottom: 0.25rem; }
 .presets label { display: inline-block; margin: 0 1rem 0 0; }
-.stickers #sticker-row { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.stickers .sticker-row { display: flex; flex-wrap: wrap; gap: 0.25rem; }
 .stickers button { font-size: 1.5rem; line-height: 1; padding: 0.25rem 0.4rem; }
 .stickers button[aria-pressed="true"] { outline: 3px solid var(--accent); }
 textarea.link { font: 12px/1.3 ui-monospace, monospace; overflow-wrap: anywhere; }
@@ -158,7 +163,7 @@ dialog::backdrop { background: #0006; }
 @media print {
   body { background: #fff; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   .card { rotate: none; box-shadow: none; border: 1px solid #0002; }
-  .toolbar, .meta, dialog, #toast { display: none; }
+  .toolbar, .meta, dialog, #toast, .card .edit { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .card { transition: none; }
