@@ -77,7 +77,7 @@ const photoBytes = (img) => Buffer.from(img.slice(img.indexOf(',') + 1), 'base64
 // Decodes a photo data URI in the page: pixel at (1, 1), mean colour, and
 // SSIM against `ref` (an image URL) drawn at the same size.
 const inspect = (page, src, ref) => page.evaluate(async (src, ref) => {
-  const { ssim } = await import('/jpeg.js');
+  const { ssim } = await import(new URL('jpeg.js', document.baseURI).href); // the app may live under a path
   const load = async (u) => { const i = new Image(); i.src = u; await i.decode(); return i; };
   const img = await load(src);
   const px = (i, w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(i, 0, 0, w, h); return g.getImageData(0, 0, w, h).data; };
