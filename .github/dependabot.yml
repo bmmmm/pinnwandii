@@ -1,0 +1,17 @@
+# github-actions only: the repo has workflows and no package manifest.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: chore(deps)
+    labels:
+      - dependencies
+    cooldown:
+      default-days: 3
+    groups:
+      actions:
+        patterns:
+          - "*"
