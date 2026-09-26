@@ -120,20 +120,16 @@
 
 <dialog id="dlg-build">
   <h2>Fertige Seite</h2>
-  <p>Eine einzelne HTML-Datei ohne Skripte, mit allen Fotos. Zum Drucken oder als PDF: Datei öffnen, drucken. Für einen kurzen Link: Datei ins Repo legen, siehe README.</p>
+  <p>Eine HTML-Datei mit allen Fotos, zum Verschicken, Drucken oder als PDF (Vorschau öffnen und drucken). Videos zeigen gedruckt ein Standbild; in der Datei öffnet ein Tipp YouTube, online spielen sie direkt.</p>
   <div class="row">
     <button type="button" class="primary" id="build-preview">Vorschau</button>
     <button type="button" id="build-download">Herunterladen</button>
     <button type="button" id="build-share">Teilen</button>
   </div>
   <div id="build-videos" hidden>
-    <h3>Mit Videos</h3>
-    <p>Dieselbe Seite mit einem kleinen Skript, das Videos und GIFs abspielt, sobald sie online liegt. Aus einer Datei spielt YouTube nichts ab: Ein Link „Online ansehen“ oben auf der Seite öffnet sie hier in der App, wo die Videos laufen. Bei vielen Fotos zeigt er die Beiträge ohne Fotos oder nur die Videos, und wird die Pinnwand noch größer, fehlt er.</p>
-    <div class="row">
-      <button type="button" id="build-video-download">Videodatei herunterladen</button>
-      <button type="button" id="build-video-share">Videodatei teilen</button>
-      <button type="button" id="build-online">Online ansehen</button>
-    </div>
+    <h3>Online ansehen</h3>
+    <p>Ein Link, der die Pinnwand hier in der App öffnet, wo auch die Videos direkt spielen. Bei vielen Fotos zeigt er die Beiträge ohne Fotos oder nur die Videos.</p>
+    <div class="row"><button type="button" id="build-online">Online ansehen</button></div>
   </div>
   <div class="row"><button type="button" data-close>Schließen</button></div>
 </dialog>

@@ -5,10 +5,10 @@
 // at worst a broken image). parseMediaLink() normalizes a link once, when it
 // is typed; mediaOf() reads any stored URL, raw links typed before included,
 // and builds player and thumbnail addresses from the parsed id only. Pure
-// ESM; playInline() is self-contained so the videos file (a finished page
-// with players) can inline its source.
+// ESM; playInline() is self-contained so the finished page can inline its
+// source.
 //
-//   YouTube  https://www.youtube.com/watch?v=<id>[&t=<seconds>]   thumbnail, player on click
+//   YouTube  https://www.youtube.com/watch?v=<id>[&t=<seconds>]   thumbnail and 3 frames, player on click
 //   Tenor    https://tenor.com/view/<id>                          player on click (it loads trackers)
 //   Giphy    https://i.giphy.com/media/<id>/giphy.webp            plain image
 import { encodeBoard, toBase64 } from './codec.js';
@@ -104,6 +104,7 @@ export function mediaOf(img) {
       ...m,
       href: canonical(m),
       thumb: `https://i.ytimg.com/vi/${m.id}/hqdefault.jpg`,
+      frames: [1, 2, 3].map((k) => `https://i.ytimg.com/vi/${m.id}/hq${k}.jpg`), // stills YouTube takes from every video: a flip-book
       embed: `https://www.youtube-nocookie.com/embed/${m.id}?autoplay=1${m.start ? `&start=${m.start}` : ''}`,
     };
   }
@@ -113,16 +114,16 @@ export function mediaOf(img) {
 
 /**
  * Plays videos and GIFs in place: a click on a card's media link inserts the
- * player after the link. Only on http(s): from a local file YouTube refuses
- * to play (no Referer), and the link opens the video on its site instead.
- * There the videos file keeps its "Online ansehen" bar; online it hides it.
+ * player after the link. From a local file YouTube refuses to play (no
+ * Referer, "Fehler 153"), so there a YouTube link opens the video on its
+ * site; Tenor plays anywhere (measured 2026-09-26).
  */
 export function playInline(doc) {
-  if (!/^https?:$/.test(doc.location.protocol)) return;
-  for (const bar of doc.querySelectorAll('.online')) bar.hidden = true;
+  const online = /^https?:$/.test(doc.location.protocol);
   doc.addEventListener('click', (e) => {
     const a = e.target.closest?.('a.media[data-embed]:not(.played)');
     if (!a || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (!online && !a.classList.contains('gif-tenor')) return;
     e.preventDefault();
     const f = doc.createElement('iframe');
     f.className = a.className;
@@ -137,9 +138,9 @@ export function playInline(doc) {
   });
 }
 
-// ---- the videos file ------------------------------------------------------------
+// ---- the finished page's player ------------------------------------------------
 
-/** The script of the videos file. */
+/** The script of a finished page with videos or GIFs. */
 export const PLAYER_JS = `(${playInline})(document);`.replace(/\r\n?/g, '\n');
 
 /** CSP source for an inline script: 'sha256-…' of its text. */
@@ -153,7 +154,7 @@ const playable = (c) => ['youtube', 'tenor'].includes(mediaOf(c.img)?.kind);
 export const hasPlayable = (board) => board.contribs.some(playable);
 
 /**
- * The online view (#v=) of a videos file in at most `cap` characters, as
+ * The online view (#v=) of a board in at most `cap` characters, as
  * { token, scope }: the whole board ('all') if it fits, else every card
  * without its photo ('text'), else only the cards that need a player
  * ('videos'), else null; null too for a board without such cards. A view

@@ -13,7 +13,7 @@ const STICKERS = ['🎉', '🎂', '🎈', '🥳', '❤️', '🌟', '🍀', '�
 const BASE = location.href.split(/[?#]/)[0]; // without ?fbclid= and the like
 const DEFAULT_THEME = { title: 'Pinnwand', preset: 'p', hue: 210 };
 const KB = (n) => `${(n / 1024).toFixed(1).replace('.', ',')} KB`;
-const LINK_CAP = 32_000; // longest link offered: admin link, online view of the videos file
+const LINK_CAP = 32_000; // longest link offered: admin link, online view (#v=)
 const plural = (n) => (n === 1 ? '1 Beitrag' : `${n} Beiträge`);
 const newOnes = (n) => (n === 1 ? '1 neuer Beitrag' : `${n} neue Beiträge`);
 const SAVE_FAILED = 'Speichern nicht möglich: Speicher voll oder gesperrt. Lade eine Sicherung herunter.';
@@ -209,6 +209,8 @@ const rotOf = (i) => (((i * 7) % 5) - 2) * 0.7;
 // A card's picture: photos and image links as <img>; a YouTube
 // video or a Tenor GIF as a link to it, which playInline() (media.js) turns
 // into the player. Tenor's player loads trackers, so it waits for the click.
+// A video shows its thumbnail and, over it, YouTube's three stills of it as a
+// flip-book (style.css); printed only the thumbnail.
 function renderMedia(img, doc, name = '') {
   const m = mediaOf(img);
   const pic = (src, loading = 'lazy') => {
@@ -236,9 +238,13 @@ function renderMedia(img, doc, name = '') {
     icon.setAttribute('aria-hidden', 'true');
     icon.textContent = '▶ ';
     play.append(icon, 'Video ansehen');
-    a.append(pic(m.thumb, doc === document ? 'lazy' : 'eager'), play); // a built page may be printed unscrolled
+    const frames = m.frames.map((src) => Object.assign(pic(src), { className: 'frame' }));
+    a.append(pic(m.thumb, doc === document ? 'lazy' : 'eager'), ...frames, play); // a built page may be printed unscrolled
   } else {
-    a.textContent = 'GIF von Tenor laden (lädt Inhalte von Tenor/Google)';
+    const load = doc.createElement('span');
+    load.className = 'load'; // not printed
+    load.textContent = ' laden (lädt Inhalte von Tenor/Google)';
+    a.append('GIF von Tenor', load);
   }
   return a;
 }
@@ -773,12 +779,10 @@ const loadCss = async () => (cssText ??= await fetch('style.css').then((r) => {
   return r.text();
 }));
 
-// The print version has no script. The videos file adds the player
-// (PLAYER_JS, allowed by its hash) and a link to the same board in the app,
-// where YouTube plays: from a local file it refuses to (no Referer). The
-// link's text says when the board was too big for it (viewToken).
+// "Online ansehen" (#v=) opens the same board in the app, where YouTube plays;
+// its label says when the board was too big for the whole of it (viewToken).
 const ONLINE_LABEL = { all: 'Online ansehen', text: 'Online ansehen, ohne Fotos', videos: 'Nur die Videos online ansehen' };
-function buildStaticPage(board, css, { script = '', hash = '', online = null } = {}) {
+function buildStaticPage(board, css, { script = '', hash = '' } = {}) {
   const doc = document.implementation.createHTMLDocument(board.title);
   doc.documentElement.lang = 'de';
   const charset = doc.createElement('meta');
@@ -805,17 +809,6 @@ function buildStaticPage(board, css, { script = '', hash = '', online = null } =
   const h1 = doc.createElement('h1');
   h1.textContent = board.title;
   header.append(h1);
-  if (online) {
-    const bar = doc.createElement('p');
-    bar.className = 'online';
-    const a = doc.createElement('a');
-    a.href = online.href;
-    a.target = '_blank';
-    a.rel = 'noopener';
-    a.textContent = ONLINE_LABEL[online.scope];
-    bar.append(a, ': Dort spielen Videos und GIFs; in dieser Datei öffnet ein Klick YouTube oder Tenor.');
-    header.append(bar);
-  }
   const main = doc.createElement('main');
   main.append(renderWall(board, doc));
   doc.body.append(header, main);
@@ -830,9 +823,13 @@ async function onlineView(board) {
   const view = await viewToken(board, LINK_CAP - `${BASE}#v=`.length);
   return view && { href: `${BASE}#v=${view.token}`, scope: view.scope };
 }
-// The finished page as a file ('print' or 'videos'), or null (with a toast)
-// if the stylesheet cannot be loaded.
-async function pageFile(board, variant = 'print') {
+// The finished page as a file, or null (with a toast) if the stylesheet
+// cannot be loaded. Printed, a video is its thumbnail; with videos or Tenor
+// GIFs the page carries the player (PLAYER_JS, allowed by its hash): from a
+// file a tap opens YouTube and plays a Tenor GIF, online both play in place.
+// Without crypto.subtle (plain http) or for the preview, whose blob: page
+// runs no inline script, there is no script and every tap opens the site.
+async function pageFile(board, { player = true } = {}) {
   let css;
   try {
     css = await loadCss();
@@ -840,48 +837,39 @@ async function pageFile(board, variant = 'print') {
     toast(CSS_FAILED);
     return null;
   }
-  if (variant === 'print') return new File([buildStaticPage(board, css)], `pinnwand-${board.id}.html`, { type: 'text/html' });
-  let hash;
-  try {
-    hash = await scriptHash(PLAYER_JS);
-  } catch { // crypto.subtle exists only on https (and localhost)
-    toast('Die Seite mit Videos lässt sich nur über https bauen.');
-    return null;
+  let script = {};
+  if (player && hasPlayable(board)) {
+    try {
+      script = { script: PLAYER_JS, hash: await scriptHash(PLAYER_JS) };
+    } catch { /* crypto.subtle exists only on https (and localhost) */ }
   }
-  const html = buildStaticPage(board, css, { script: PLAYER_JS, hash, online: await onlineView(board) });
-  return new File([html], `pinnwand-${board.id}-videos.html`, { type: 'text/html' });
+  return new File([buildStaticPage(board, css, script)], `${slug(board.title)}.html`, { type: 'text/html' });
 }
 
 function openBuild() {
   loadCss().catch(() => toast(CSS_FAILED));
   $('#build-share').hidden = !navigator.canShare;
-  $('#build-video-share').hidden = !navigator.canShare;
   $('#build-videos').hidden = !hasPlayable(current);
   openModal($('#dlg-build'));
 }
 $('#build-preview').onclick = async () => {
-  const f = await pageFile(current);
+  const f = await pageFile(current, { player: false });
   if (!f) return;
   const url = URL.createObjectURL(f);
   const win = window.open(url, '_blank');
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
   if (!win) toast('Der Browser hat das Fenster blockiert: bitte herunterladen.');
 };
-async function downloadPage(variant) {
-  const f = await pageFile(current, variant);
+$('#build-download').onclick = async () => {
+  const f = await pageFile(current);
   if (f) download(f, f.name);
-}
-async function sharePage(variant) {
-  const f = await pageFile(current, variant);
+};
+$('#build-share').onclick = async () => {
+  const f = await pageFile(current);
   if (!f) return;
   if (canShareFiles([f])) await shareFiles([f]);
   else toast('Dateien teilen geht hier nicht: bitte herunterladen.');
-}
-// Two buttons, not one that saves both files: a second download in one click makes Chrome ask.
-$('#build-download').onclick = () => downloadPage('print');
-$('#build-share').onclick = () => sharePage('print');
-$('#build-video-download').onclick = () => downloadPage('videos');
-$('#build-video-share').onclick = () => sharePage('videos');
+};
 $('#build-online').onclick = async () => {
   const view = await onlineView(current);
   if (!view) return toast(`Zu viele Beiträge für einen Link (höchstens ${KB(LINK_CAP)}).`);

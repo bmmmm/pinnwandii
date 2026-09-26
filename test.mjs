@@ -477,6 +477,7 @@ test('29 players and thumbnails come from the id alone; raw links typed before s
   deepEqual(mediaOf(`${YT}&t=90`), {
     kind: 'youtube', id: 'M7lc1UVf-VE', start: 90, href: `${YT}&t=90`,
     thumb: 'https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg',
+    frames: [1, 2, 3].map((k) => `https://i.ytimg.com/vi/M7lc1UVf-VE/hq${k}.jpg`),
     embed: 'https://www.youtube-nocookie.com/embed/M7lc1UVf-VE?autoplay=1&start=90',
   });
   const raw = mediaOf('https://youtu.be/M7lc1UVf-VE?si=%22%3E%3Cb%3E&feature="x"&t=5');
@@ -502,22 +503,22 @@ test('30 media links travel through tokens and boards unchanged, origins include
 });
 
 // A document with one media link, just enough for playInline().
-function mediaDoc(protocol) {
+function mediaDoc(protocol, kind = 'video') {
   const listeners = [];
-  const bar = { hidden: false }; // the videos file's "Online ansehen"
   const doc = { location: { protocol }, activeElement: null, frames: [] };
-  doc.querySelectorAll = (sel) => (sel === '.online' ? [bar] : []);
   doc.addEventListener = (type, fn) => listeners.push([type, fn]);
   doc.createElement = (tag) => {
     const e = { tagName: tag.toUpperCase(), focus: () => { doc.activeElement = e; } };
     doc.frames.push(e);
     return e;
   };
-  const classes = new Set(['media', 'video']);
+  const classes = new Set(['media', kind]);
   const link = {
-    className: 'media video', next: null,
-    dataset: { embed: 'https://www.youtube-nocookie.com/embed/M7lc1UVf-VE?autoplay=1', title: 'YouTube-Video' },
-    classList: { add: (c) => classes.add(c), has: (c) => classes.has(c) },
+    className: `media ${kind}`, next: null,
+    dataset: kind === 'video'
+      ? { embed: 'https://www.youtube-nocookie.com/embed/M7lc1UVf-VE?autoplay=1', title: 'YouTube-Video' }
+      : { embed: 'https://tenor.com/embed/10879878982515761105', title: 'GIF von Tia' },
+    classList: { add: (c) => classes.add(c), has: (c) => classes.has(c), contains: (c) => classes.has(c) },
     after: (f) => { link.next = f; },
   };
   // a.media[data-embed] and a.media[data-embed]:not(.played), as a browser matches them
@@ -528,13 +529,12 @@ function mediaDoc(protocol) {
     for (const [type, fn] of listeners) if (type === 'click') fn(e);
     return prevented;
   };
-  return { doc, link, click, listeners, bar };
+  return { doc, link, click, listeners };
 }
 
-test('31 playInline: a plain click on http(s) swaps the link for the player, nothing else does', () => {
-  const { doc, link, click, bar } = mediaDoc('https:');
+test('31 playInline: a plain click swaps the link for the player online, and for a Tenor GIF anywhere', () => {
+  const { doc, link, click } = mediaDoc('https:');
   playInline(doc);
-  equal(bar.hidden, true, 'online, the videos file needs no "Online ansehen"');
   for (const o of [{ button: 1 }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }]) {
     equal(click(o), false, JSON.stringify(o));
   }
@@ -548,11 +548,13 @@ test('31 playInline: a plain click on http(s) swaps the link for the player, not
   ok(/(^|; )autoplay(;|$)/.test(f.allow) && f.allow.includes('fullscreen'), f.allow);
   equal(click(), false, 'a played link is left alone');
   equal(doc.frames.length, 1);
-  for (const protocol of ['file:', 'blob:', 'content:']) {
+  for (const protocol of ['file:', 'blob:', 'content:']) { // YouTube refuses without a Referer: the link opens it there
     const local = mediaDoc(protocol);
     playInline(local.doc);
-    equal(local.click(), false, protocol);
-    deepEqual([local.listeners.length, local.doc.frames.length, local.bar.hidden], [0, 0, false], protocol);
+    deepEqual([local.click(), local.doc.frames.length], [false, 0], protocol);
+    const gif = mediaDoc(protocol, 'gif-tenor');
+    playInline(gif.doc);
+    deepEqual([gif.click(), gif.doc.frames.length, gif.doc.frames[0]?.src], [true, 1, gif.link.dataset.embed], `${protocol} Tenor`);
   }
   // the app's CSP lets exactly these players in
   const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(readFileSync(new URL('./index.html', import.meta.url), 'utf8'))[1];
@@ -584,14 +586,16 @@ test('32 own cards get a random origin: written again after a delete they are ne
   deepEqual(g.contribs.map((e) => e.img), [YT]);
 });
 
-test('33 the videos file: its script is playInline, allowed by its hash; the online view fits one link', async () => {
+test('33 the finished page: its script is playInline, allowed by its hash; the online view fits one link', async () => {
   ok(!/<\/script|<!--/i.test(PLAYER_JS), 'safe inside <script>');
   for (const protocol of ['https:', 'file:', 'blob:']) {
-    const m = mediaDoc(protocol);
-    vm.runInNewContext(PLAYER_JS, { document: m.doc });
-    const online = protocol === 'https:';
-    deepEqual([m.click({ metaKey: true }), m.click(), m.doc.frames.length, m.doc.frames[0]?.src, m.bar.hidden],
-      online ? [false, true, 1, m.link.dataset.embed, true] : [false, false, 0, undefined, false], protocol);
+    for (const kind of ['video', 'gif-tenor']) {
+      const m = mediaDoc(protocol, kind);
+      vm.runInNewContext(PLAYER_JS, { document: m.doc });
+      const plays = protocol === 'https:' || kind === 'gif-tenor';
+      deepEqual([m.click({ metaKey: true }), m.click(), m.doc.frames.length, m.doc.frames[0]?.src],
+        plays ? [false, true, 1, m.link.dataset.embed] : [false, false, 0, undefined], `${protocol} ${kind}`);
+    }
   }
   equal(await scriptHash(PLAYER_JS), `'sha256-${createHash('sha256').update(PLAYER_JS).digest('base64')}'`);
   // the online view: the whole board if it fits, else every card without its photo, else only the players

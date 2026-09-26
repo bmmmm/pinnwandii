@@ -102,6 +102,7 @@ const pixelAt = async (page, x, y) => {
   }
   return [...zlib.inflateSync(Buffer.concat(idat)).subarray(1, 4)];
 };
+const slug = (s) => s.normalize('NFKD').replace(/\p{M}+/gu, '').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'gruss'; // as app.js names files
 const cardCount = (page) => page.$$eval('#wall .card', (c) => c.length);
 const waitFor = (page, fn, arg, ms = 5000) => page.waitForFunction(fn, { timeout: ms }, arg);
 const tokenOf = (link) => link.match(/#c=(\S+)/)?.[1];
@@ -459,7 +460,7 @@ try {
   await preview.close();
   await page.bringToFront();
   await page.click('#build-download');
-  const htmlPath = path.join(OUT, 'downloads', `pinnwand-${boardId}.html`);
+  const htmlPath = path.join(OUT, 'downloads', `${slug(await text(page, '#title'))}.html`);
   for (let i = 0; i < 50 && !fs.existsSync(htmlPath); i++) await sleep(100);
   check('6 html downloaded', fs.existsSync(htmlPath), htmlPath);
   const html = fs.readFileSync(htmlPath, 'utf8');
@@ -905,72 +906,75 @@ try {
   await sleep(300);
   check('15 Tenor: player only after the click, square', tenorFrame[0] === TENOR_EMBED && tenorFrame[1] === 'GIF von Tia' && Math.abs(tenorFrame[2]) <= 1 && players.some((p) => p.url === TENOR_EMBED), JSON.stringify(tenorFrame));
   await shot(mp, '15-played');
-  // the print version (finished page without scripts) keeps the thumbnail links
+  // the finished page: one file for every form. Printed a still; from a file a tap opens YouTube
+  // (it refuses to play there) and plays a Tenor GIF; hosted a tap plays in place
   await bcdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: path.join(OUT, 'downloads'), browserContextId: mCtx.id, eventsEnabled: true });
   await mp.click('#toolbar [data-act=build]');
   await waitFor(mp, () => document.querySelector('#dlg-build').open);
+  check('15 a board with videos: "Online ansehen" is offered', await visible(mp, '#build-videos'));
   await mp.click('#build-download');
-  const medHtml = path.join(OUT, 'downloads', `pinnwand-${med.id}.html`);
+  const medHtml = path.join(OUT, 'downloads', `${slug(med.title)}.html`);
   for (let i = 0; i < 50 && !fs.existsSync(medHtml); i++) await sleep(100);
   const mh = fs.existsSync(medHtml) ? fs.readFileSync(medHtml, 'utf8') : '';
   const thumbs = mh.match(/<img [^>]*hqdefault[^>]*>/g) ?? [];
-  check('15 print version: thumbnail links loaded eagerly (printing), no <iframe, no <script', (mh.match(/class="media video"/g) ?? []).length === 2 && thumbs.length === 2 && thumbs.every((t) => t.includes('loading="eager"')) && mh.includes('class="media gif-tenor"') && !/<iframe|<script/i.test(mh), `${mh.length} chars, ${thumbs.join(' ')}`);
-  // the videos file: the same page with the player script and a link to the online view
-  check('15 a board with videos: the videos file is offered', await visible(mp, '#build-videos'));
-  await mp.click('#build-video-download');
-  const vidPath = path.join(OUT, 'downloads', `pinnwand-${med.id}-videos.html`);
-  for (let i = 0; i < 50 && !fs.existsSync(vidPath); i++) await sleep(100);
-  const vh = fs.existsSync(vidPath) ? fs.readFileSync(vidPath, 'utf8') : '';
-  const vScripts = [...vh.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-  const vCsp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(vh)?.[1] ?? '';
+  const stills = mh.match(/<img [^>]*class="frame"[^>]*>/g) ?? [];
+  check('15 finished page: thumbnails loaded eagerly (printing), three stills per video, no <iframe', (mh.match(/class="media video"/g) ?? []).length === 2 && thumbs.length === 2 && thumbs.every((t) => t.includes('loading="eager"')) && stills.length === 6 && stills.every((f) => /\/hq[123]\.jpg"/.test(f)) && mh.includes('class="media gif-tenor"') && !/<iframe/i.test(mh), `${mh.length} chars, ${thumbs.length} thumbnails, ${stills.length} stills`);
+  const vScripts = [...mh.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  const vCsp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(mh)?.[1] ?? '';
   const vHash = vScripts.length ? `'sha256-${createHash('sha256').update(vScripts[0]).digest('base64')}'` : 'none';
-  check('15 videos file: one script, allowed by its hash; the players in frame-src', (vh.match(/<script/g) ?? []).length === 1 && vCsp.split('; ').includes(`script-src ${vHash}`) && vCsp.split('; ').includes('frame-src https://www.youtube-nocookie.com https://tenor.com') && vCsp.split('; ').includes("base-uri 'none'"), vCsp);
-  const [, onlineHref = '', onlineText = ''] = /<p class="online"><a href="([^"]+)"[^>]*>([^<]*)<\/a>/.exec(vh) ?? [];
-  const onlineBoard = onlineHref.includes('#v=') ? await decodeBoard(onlineHref.split('#v=')[1]).catch(() => null) : null;
-  const vo = await newPage(mCtx, 'videos-view');
-  if (onlineBoard) await vo.goto(onlineHref, { waitUntil: 'networkidle0' });
-  check('15 videos file: "Online ansehen" opens the whole board in the app', onlineText === 'Online ansehen' && onlineHref.startsWith(`${ORIGIN}/#v=`) && onlineBoard?.contribs.length === 4 && (await cardCount(vo)) === 4, `${onlineText} ${onlineHref.slice(0, 60)}`);
-  await vo.close();
-  const vf = await newPage(mCtx, 'videos-file');
-  await vf.goto(`file://${vidPath}`, { waitUntil: 'load' });
-  await vf.evaluate(() => window.addEventListener('click', (e) => e.preventDefault())); // keep the link from opening YouTube
+  check('15 finished page: one script, allowed by its hash; the players in frame-src; no "Online ansehen" bar', (mh.match(/<script/g) ?? []).length === 1 && vCsp.split('; ').includes(`script-src ${vHash}`) && vCsp.split('; ').includes('frame-src https://www.youtube-nocookie.com https://tenor.com') && vCsp.split('; ').includes("base-uri 'none'") && !mh.includes('class="online"'), vCsp);
+  const vf = await newPage(mCtx, 'page-file');
+  await vf.goto(`file://${medHtml}`, { waitUntil: 'load' });
+  await vf.evaluate(() => window.addEventListener('click', (e) => e.preventDefault())); // keep the links from leaving the page
   await vf.$eval('a.media.video', (a) => a.click());
+  await vf.$eval('a.media.gif-tenor', (a) => a.click());
   await sleep(300);
-  const fromDisk = await vf.evaluate(() => [getComputedStyle(document.querySelector('.online')).display !== 'none', document.querySelectorAll('iframe').length, document.querySelectorAll('.card').length].join());
+  const fromDisk = await vf.evaluate(() => [document.querySelectorAll('iframe.media.video').length, document.querySelector('iframe.media.gif-tenor')?.src ?? '', document.querySelectorAll('.card').length].join());
+  check('15 finished page from disk: a tap on a video starts no player, a Tenor GIF plays', fromDisk === `0,${TENOR_EMBED},4`, fromDisk);
+  const flip = await vf.evaluate(() => [...document.querySelectorAll('a.media.video')][0].querySelectorAll('.frame').length + ',' + [...[...document.querySelectorAll('a.media.video')][0].querySelectorAll('.frame')].map((e) => `${getComputedStyle(e).animationName}/${getComputedStyle(e).animationDelay}`).join());
+  await vf.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
+  const still = await vf.evaluate(() => getComputedStyle(document.querySelector('a.media.video .frame')).display);
+  await vf.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
   await vf.emulateMediaType('print');
-  const diskPrint = await vf.evaluate(() => getComputedStyle(document.querySelector('.online')).display);
-  check('15 videos file from disk: bar shown (not printed), a click starts no player', fromDisk === 'true,0,4' && diskPrint === 'none', `${fromDisk}, printed ${diskPrint}`);
+  const printedPage = await vf.evaluate(() => { const a = document.querySelector('a.media.video'); return [getComputedStyle(a.querySelector('img:not(.frame)')).display, getComputedStyle(a.querySelector('.frame')).display, getComputedStyle(a.querySelector('.play')).display, getComputedStyle(document.querySelector('a.gif-tenor .load')).display].join(); });
+  check('15 finished page: three stills flip on screen, stand still with reduced motion, printed only the thumbnail', flip === '3,flip/0s,flip/-2s,flip/-1s' && still === 'none' && printedPage === 'block,none,none,none', `${flip}; reduced motion ${still}; printed ${printedPage}`);
+  await shot(vf, '15-page-file');
   await vf.close();
-  served.set(`${ORIGIN}/boards/t.html`, vh);
-  const vs = await newPage(mCtx, 'videos-online');
+  served.set(`${ORIGIN}/boards/t.html`, mh);
+  const vs = await newPage(mCtx, 'page-online');
   await vs.goto(`${ORIGIN}/boards/t.html`, { waitUntil: 'networkidle0' });
   const known = players.length;
   await vs.bringToFront();
   await vs.click('a.media.video');
   await waitFor(vs, () => !!document.querySelector('iframe.media')).catch(() => {});
   await sleep(300);
-  const online = await vs.evaluate(() => [getComputedStyle(document.querySelector('.online')).display, document.querySelector('iframe.media')?.src ?? '', document.activeElement?.tagName]);
+  const online = await vs.evaluate(() => [document.querySelector('iframe.media')?.src ?? '', document.activeElement?.tagName]);
   const onlineReq = players.slice(known).find((p) => p.url === YT_EMBED);
-  check('15 videos file online: bar hidden, a click plays in place, Referer sent', online.join() === `none,${YT_EMBED},IFRAME` && onlineReq?.referer === `${SITE}/`, `${online} ${JSON.stringify(onlineReq)}`);
+  check('15 finished page online: a click plays in place, Referer sent', online.join() === `${YT_EMBED},IFRAME` && onlineReq?.referer === `${SITE}/`, `${online} ${JSON.stringify(onlineReq)}`);
   await vs.emulateMediaType('print');
   const vPrint = await vs.evaluate(() => [getComputedStyle(document.querySelector('iframe.media')).display, getComputedStyle(document.querySelector('a.media.played')).display].join());
   await vs.emulateMediaType(null);
-  check('15 videos file printed: player hidden, thumbnail shown', vPrint === 'none,block', vPrint);
-  await shot(vs, '15-videos-file-online');
+  check('15 finished page printed: player hidden, thumbnail shown', vPrint === 'none,block', vPrint);
+  await shot(vs, '15-page-online');
   await vs.close();
-  // plain http off localhost has no crypto.subtle; a blocked popup still leaves the link
-  const vx = await newPage(mCtx, 'videos-fallbacks');
+  // plain http off localhost has no crypto.subtle: the page comes without a script; a blocked popup still leaves the link
+  fs.rmSync(medHtml, { force: true });
+  const vx = await newPage(mCtx, 'page-fallbacks');
   await vx.evaluateOnNewDocument(() => { Object.defineProperty(crypto, 'subtle', { value: undefined }); window.open = () => null; });
   await vx.goto(`${ORIGIN}/#o=${med.id}`, { waitUntil: 'networkidle0' });
   await vx.click('#toolbar [data-act=build]');
   await waitFor(vx, () => document.querySelector('#dlg-build').open);
-  await vx.$eval('#build-video-download', (b) => b.click());
-  await waitFor(vx, () => document.querySelector('#toast').textContent.length > 0).catch(() => {});
-  const noSubtle = await text(vx, '#toast');
+  await vx.$eval('#build-download', (b) => b.click());
+  for (let i = 0; i < 50 && !fs.existsSync(medHtml); i++) await sleep(100);
+  const plain = fs.existsSync(medHtml) ? fs.readFileSync(medHtml, 'utf8') : '';
+  check('15 no crypto.subtle: the page comes without a script', plain.includes('class="media video"') && !/<script/i.test(plain), `${plain.length} chars`);
   await vx.$eval('#build-online', (b) => b.click());
   await waitFor(vx, () => document.querySelector('#dlg-share').open).catch(() => {});
-  const blocked = await vx.evaluate(() => [document.querySelector('#dlg-share').open, document.querySelector('#share-title').textContent, document.querySelector('#share-text').value.includes('#v=3.')]);
-  check('15 fallbacks: no crypto.subtle says https is needed; a blocked popup offers the link to copy', noSubtle === 'Die Seite mit Videos lässt sich nur über https bauen.' && blocked.join() === 'true,Online ansehen,true', `${noSubtle} ${blocked}`);
+  const [blockedOpen, blockedTitle, viewHref] = await vx.evaluate(() => [document.querySelector('#dlg-share').open, document.querySelector('#share-title').textContent, document.querySelector('#share-text').value]);
+  const vo = await newPage(mCtx, 'online-view');
+  if (viewHref.includes('#v=3.')) await vo.goto(viewHref, { waitUntil: 'networkidle0' });
+  check('15 "Online ansehen": a blocked popup offers the link, which opens the whole board in the app', blockedOpen && blockedTitle === 'Online ansehen' && viewHref.startsWith(`${ORIGIN}/#v=`) && (await cardCount(vo)) === 4, `${blockedTitle} ${viewHref.slice(0, 60)}`);
+  await vo.close();
   await vx.close();
   await mp.bringToFront();
   await mp.bringToFront();
