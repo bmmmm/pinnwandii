@@ -54,14 +54,28 @@ function h(tag, props = {}, ...kids) {
 
 // ---- toast and dialogs ------------------------------------------------------
 
+// The toast is a popover: in the top layer, above an open dialog. Without
+// popovers (Safari < 17, Chrome < 114) it would show as an empty box all the
+// time and under dialogs, so there it is hidden and moved into the open one.
+const POPOVER = typeof HTMLElement.prototype.showPopover === 'function';
+if (!POPOVER) {
+  $('#toast').removeAttribute('popover');
+  $('#toast').hidden = true;
+}
 let toastTimer;
 function toast(msg) {
   const t = $('#toast');
   t.textContent = msg;
-  try { t.showPopover(); } catch { t.hidden = false; }
+  if (POPOVER) {
+    try { t.showPopover(); } catch { /* already shown */ }
+  } else {
+    ($('dialog[open]') ?? document.body).append(t);
+    t.hidden = false;
+  }
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
-    try { t.hidePopover(); } catch { t.hidden = true; }
+    if (POPOVER) t.hidePopover();
+    else t.hidden = true;
   }, 3500);
 }
 

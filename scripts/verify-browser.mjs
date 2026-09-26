@@ -601,6 +601,22 @@ try {
   await old.goto(inviteLink, { waitUntil: 'networkidle0' });
   const oldText = await text(old, '#error-text');
   check('13 no Compression Streams: "zu alt" message', await visible(old, '#view-error') && oldText.includes('zu alt'), oldText);
+  // a browser without popovers (Safari < 17): no empty toast box, and a toast shows above an open dialog
+  const nopop = await newPage(oldCtx, 'no-popover');
+  await nopop.evaluateOnNewDocument(() => { for (const k of ['showPopover', 'hidePopover', 'togglePopover']) delete HTMLElement.prototype[k]; });
+  await nopop.goto(`${ORIGIN}/`, { waitUntil: 'networkidle0' });
+  const npId = newId();
+  await nopop.evaluate((id) => { localStorage.setItem(`pinnwandii:${id}`, JSON.stringify([id, 'Ohne Popover', 'p', 30, [['Anna', 'Hallo', '', '']]])); location.hash = `#o=${id}`; }, npId);
+  await waitFor(nopop, () => document.querySelectorAll('#wall .card').length === 1);
+  const boxBefore = await nopop.$eval('#toast', (t) => t.hidden && getComputedStyle(t).display === 'none');
+  await nopop.click('#toolbar [data-act=merge]');
+  await waitFor(nopop, () => document.querySelector('#dlg-merge').open);
+  await nopop.evaluate(() => { navigator.clipboard.readText = () => Promise.reject(new Error('denied')); });
+  await nopop.click('#merge-clip');
+  await waitFor(nopop, () => document.querySelector('#toast').textContent.startsWith('Kein Zugriff'));
+  const onTop = await nopop.$eval('#toast', (t) => { const r = t.getBoundingClientRect(); return r.width > 0 && t.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); });
+  check('13 no popovers: no empty toast box, a toast shows above the open dialog', boxBefore && onTop, `hidden before ${boxBefore}, on top ${onTop}`);
+  await nopop.close();
   await old.close();
 
   // ---- 14. curating: edit, remove photo, move, delete; merging again changes nothing -----
