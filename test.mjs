@@ -167,12 +167,12 @@ test('10 mergeText: chat export starting with "[" is not a backup, real backup i
   const tok = await encodeContrib(contrib);
   const target = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [] };
   const chat = `[25.09.26, 12:01] Anna: https://x.test/#c=${tok}\n[25.09.26, 12:02] Ben: [Bild weggelassen]`;
-  deepEqual(await mergeText(target, chat), { added: 1, dupes: 0, foreign: 0, broken: 0, full: 0 });
+  deepEqual(await mergeText(target, chat), { added: 1, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0, newer: 0 });
   const backup = JSON.stringify(toTuple('board', board));
   ok(backup.startsWith('['));
-  deepEqual(await mergeText(target, backup), { added: 3, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0 });
-  deepEqual(await mergeText(target, backup), { added: 0, dupes: 3, foreign: 0, broken: 0, full: 0, removed: 0 });
-  deepEqual(await mergeText(target, '[1, 2, 3]'), { added: 0, dupes: 0, foreign: 0, broken: 1, full: 0 });
+  deepEqual(await mergeText(target, backup), { added: 3, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0, newer: 0 });
+  deepEqual(await mergeText(target, backup), { added: 0, dupes: 3, foreign: 0, broken: 0, full: 0, removed: 0, newer: 0 });
+  deepEqual(await mergeText(target, '[1, 2, 3]'), { added: 0, dupes: 0, foreign: 0, broken: 1, full: 0, removed: 0, newer: 0 });
   equal(target.contribs.length, 4);
 });
 
@@ -213,7 +213,7 @@ test('16 mergeText: JSON that is no backup is searched for links (Telegram expor
     { from: 'Anna', text: `Glückwunsch von Anna: https:\/\/x.test\/#c=${a}` },
     { from: 'Ben', text: ['Hier: ', { type: 'link', text: `https://x.test/#c=${b}` }] },
   ] });
-  deepEqual(await mergeText(target, telegram), { added: 2, dupes: 0, foreign: 0, broken: 0, full: 0 });
+  deepEqual(await mergeText(target, telegram), { added: 2, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0, newer: 0 });
   deepEqual(target.contribs.map((e) => e.name), ['Anna', 'Ben']);
 });
 
@@ -252,7 +252,7 @@ test('19 byte counts are wire-only: a backup with a numeric image is no backup',
   ok(validate('contrib', [ID, 'M', 'hi', '', 5], { wire: true }));
   throws(() => validate('contrib', [ID, 'M', 'hi', '', -5], { wire: true }), { code: 'invalid' }); // sketches (version 2) are gone
   const target = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [] };
-  deepEqual(await mergeText(target, JSON.stringify([ID, 'x', 'p', 1, [['M', 'hi', '', -5]]])), { added: 0, dupes: 0, foreign: 0, broken: 1, full: 0 });
+  deepEqual(await mergeText(target, JSON.stringify([ID, 'x', 'p', 1, [['M', 'hi', '', -5]]])), { added: 0, dupes: 0, foreign: 0, broken: 1, full: 0, removed: 0, newer: 0 });
   equal(target.contribs.length, 0);
 });
 
@@ -410,9 +410,9 @@ test('27 an uncurated board is stored compactly; deletions from elsewhere only o
   deepEqual(mergeBoard(b, other, { deletions: false }), { added: 0, dupes: 1, foreign: 0, full: 0, removed: 0 });
   deepEqual([b.contribs.length, b.deleted], [2, []]);
   const keep = structuredClone(b);
-  deepEqual(await mergeText(keep, JSON.stringify(toTuple('board', other)), { deletions: false }), { added: 0, dupes: 1, foreign: 0, broken: 0, full: 0, removed: 0 });
+  deepEqual(await mergeText(keep, JSON.stringify(toTuple('board', other)), { deletions: false }), { added: 0, dupes: 1, foreign: 0, broken: 0, full: 0, removed: 0, newer: 0 });
   equal(keep.contribs.length, 2);
-  deepEqual(await mergeText(b, JSON.stringify(toTuple('board', other))), { added: 0, dupes: 1, foreign: 0, broken: 0, full: 0, removed: 1 });
+  deepEqual(await mergeText(b, JSON.stringify(toTuple('board', other))), { added: 0, dupes: 1, foreign: 0, broken: 0, full: 0, removed: 1, newer: 0 });
   deepEqual(b.contribs.map((e) => e.name), ['Anna']);
 });
 
@@ -638,4 +638,10 @@ test('35 keeping a card deleted elsewhere still remembers the other deletions', 
   deepEqual(mergeBoard(here, there, { deletions: false }), { added: 0, dupes: 0, foreign: 0, full: 0, removed: 0 });
   deepEqual([here.contribs.map((e) => e.name), here.deleted], [['Ben'], [cleoOrigin]]);
   deepEqual(await mergeContribs(here, [cleo]), { added: 0, dupes: 1, foreign: 0, broken: 0, full: 0 }); // the same chat pasted again
+});
+
+test('36 a link from a newer app counts as newer, not as broken', async () => {
+  const tok = await encodeContrib(contrib);
+  const target = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [] };
+  deepEqual(await mergeText(target, `https://x.test/#c=4.${tok.slice(2)} und https://x.test/#b=4.${tok.slice(2)}`), { added: 0, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0, newer: 2 });
 });

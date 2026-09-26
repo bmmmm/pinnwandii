@@ -415,43 +415,89 @@ export function extractContribs(text) {
   return out;
 }
 
+// The contribution in a candidate, dropping trailing segments that turn out
+// to be ordinary text: { c }, or { code } of the error ('version': a link
+// from a newer app).
 async function decodeCandidate(cand) {
   const segs = cand.split(' ');
   for (let k = segs.length; k > 0; k--) {
     try {
-      return await decodeContrib(segs.slice(0, k).join(''));
+      return { c: await decodeContrib(segs.slice(0, k).join('')) };
     } catch (e) {
       if (!(e instanceof CodecError)) throw e;
+      if (e.code === 'version') return { code: 'version' };
     }
   }
-  return null;
+  return { code: 'broken' };
 }
 
 /** Merges token candidates (from extractContribs) into the board. */
 export async function mergeContribs(board, candidates) {
   const r = { added: 0, dupes: 0, foreign: 0, broken: 0, full: 0 };
   for (const cand of candidates) {
-    const c = await decodeCandidate(cand);
+    const { c } = await decodeCandidate(cand);
     if (!c) { r.broken++; continue; }
     r[addContrib(board, c)]++;
   }
   return r;
 }
 
+const ADMIN_RE = /#b=(\d+\.[A-Za-z0-9_-]+)/g;
+
 /**
- * Merges whatever a person pasted or dropped: a backup file (the board tuple
- * as JSON) or free text with contribution links. Chat exports also start
- * with "[" (a timestamp), so only text that really parses as JSON counts as
- * a backup; everything else is searched for tokens. So is JSON that is no
- * backup (Telegram exports chats as JSON); without any token it is counted
- * as one broken item.
+ * Reads whatever a person pasted or dropped, without touching any board:
+ * { boards, contribs, broken, newer }. A backup file (the board tuple as
+ * JSON) is one board. Any other text is searched for admin links (boards)
+ * and contribution links. Chat exports also start with "[" (a timestamp),
+ * so only text that really parses as JSON counts as a backup; JSON that is
+ * no backup (Telegram exports chats as JSON) is searched too, and with
+ * nothing in it counts as one broken item. `newer` counts links from a
+ * newer app.
  */
-export async function mergeText(board, text, opts) {
-  const other = parseBackup(text);
-  if (other) return { broken: 0, ...mergeBoard(board, other, opts) };
+export async function readText(text) {
+  const read = { boards: [], contribs: [], broken: 0, newer: 0 };
+  const backup = parseBackup(text);
+  if (backup) {
+    read.boards.push(backup);
+    return read;
+  }
+  const count = (code) => { read[code === 'version' ? 'newer' : 'broken']++; };
+  for (const [, tok] of text.matchAll(ADMIN_RE)) {
+    try {
+      read.boards.push(await decodeBoard(tok));
+    } catch (e) {
+      if (!(e instanceof CodecError)) throw e;
+      count(e.code);
+    }
+  }
   const cands = extractContribs(text);
-  if (looksLikeJson(text) && cands.length === 0) return { added: 0, dupes: 0, foreign: 0, broken: 1, full: 0 };
-  return mergeContribs(board, cands);
+  for (const cand of cands) {
+    const { c, code } = await decodeCandidate(cand);
+    if (c) read.contribs.push(c);
+    else count(code);
+  }
+  if (!read.boards.length && !cands.length && !read.broken && !read.newer && looksLikeJson(text)) read.broken = 1;
+  return read;
+}
+
+/**
+ * Applies what readText found to a board, with no await in between: boards
+ * merge as copies of this one (mergeBoard; `deletions` is a boolean or a
+ * function of the other board), contributions are added. Returns the counts.
+ */
+export function applyRead(board, read, { deletions = true } = {}) {
+  const r = { added: 0, dupes: 0, foreign: 0, broken: read.broken, full: 0, removed: 0, newer: read.newer };
+  for (const other of read.boards) {
+    const m = mergeBoard(board, other, { deletions: typeof deletions === 'function' ? deletions(other) : deletions });
+    for (const k of Object.keys(m)) r[k] += m[k];
+  }
+  for (const c of read.contribs) r[addContrib(board, c)]++;
+  return r;
+}
+
+/** Merges pasted or dropped text into a board: readText, then applyRead. */
+export async function mergeText(board, text, opts) {
+  return applyRead(board, await readText(text), opts);
 }
 const looksLikeJson = (text) => {
   const t = text.trim();

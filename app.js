@@ -21,16 +21,23 @@ const fullNote = (n) => (n ? ` ${n} nicht übernommen: Pinnwand voll (höchstens
 const removedNote = (n) => (n ? `, ${n} gelöscht` : '');
 const NO_MEDIA = 'Dieser Link zeigt auf kein einzelnes Video oder GIF: Öffne es und teile dessen Link.';
 
-// Merges another copy of a board (backup, admin link). Posts deleted there
-// are only deleted here after asking: a crafted file could otherwise make
-// cards disappear for good.
-async function mergeBackup(local, other) {
-  const gone = codec.deletedIn(local, other);
+// Another copy of a board (backup, admin link) deletes posts here only after
+// asking: a crafted file could otherwise make cards disappear for good.
+async function askDeletions(other) {
+  const local = store.load(other.id);
+  const gone = local ? codec.deletedIn(local, other) : [];
   const names = gone.map((e) => e.name).join(', ');
-  const deletions = !gone.length || await confirmDialog(gone.length === 1
+  return !gone.length || confirmDialog(gone.length === 1
     ? `Dort wurde 1 Beitrag gelöscht (${names}). Hier auch löschen?`
     : `Dort wurden ${gone.length} Beiträge gelöscht (${names}). Hier auch löschen?`, { ok: 'Hier auch löschen', cancel: 'Hier behalten' });
-  return codec.mergeBoard(local, other, { deletions });
+}
+// Merges another copy into the stored board. The board is loaded after the
+// question, so a post another tab saved meanwhile is merged into, not
+// overwritten. Null if the board is not (or no longer) stored here.
+async function mergeCopy(other) {
+  const deletions = await askDeletions(other);
+  const local = store.load(other.id);
+  return local && { local, before: local.contribs.length, r: codec.mergeBoard(local, other, { deletions }) };
 }
 // Signal (Android, Desktop) sends text over 2048 UTF-8 bytes as an attachment,
 // and the link arrives cut off; Telegram splits at 4096 characters. The whole
@@ -260,6 +267,10 @@ function reloadCurrent() {
 }
 window.addEventListener('storage', (e) => {
   if (!current || e.key !== store.key(current.id)) return;
+  if (e.newValue === null) { // deleted in another tab: a change here would store it again
+    location.hash = '';
+    return;
+  }
   reloadCurrent();
   applyTheme(current);
   renderBoard(current);
@@ -349,13 +360,11 @@ $('#restore').addEventListener('change', async (e) => {
   if (!file) return;
   try {
     const b = codec.validate('board', JSON.parse(await file.text()));
-    const local = store.load(b.id);
-    if (local) {
-      const before = local.contribs.length;
-      const r = await mergeBackup(local, b);
-      if (!store.save(local)) return;
-      highlightFrom = before - r.removed;
-      toast(`Sicherung zusammengeführt: ${newOnes(r.added)}${removedNote(r.removed)}.${fullNote(r.full)}`);
+    const m = store.load(b.id) && await mergeCopy(b);
+    if (m) {
+      if (!store.save(m.local)) return;
+      highlightFrom = m.before - m.r.removed;
+      toast(`Sicherung zusammengeführt: ${newOnes(m.r.added)}${removedNote(m.r.removed)}.${fullNote(m.r.full)}`);
     } else {
       if (!store.save(b)) return;
       toast(`Pinnwand „${b.title}“ geladen (${plural(b.contribs.length)}).`);
@@ -434,13 +443,13 @@ function receive(c) {
 }
 
 async function adopt(b) {
-  const local = store.load(b.id);
-  if (local) {
-    const before = local.contribs.length;
-    const r = await mergeBackup(local, b);
-    if (!store.save(local)) return showError(new Error(SAVE_FAILED));
-    highlightFrom = before - r.removed;
-    toast(`Pinnwand zusammengeführt: ${newOnes(r.added)}${removedNote(r.removed)}.${fullNote(r.full)}`);
+  const hash = location.hash;
+  const m = store.load(b.id) && await mergeCopy(b);
+  if (location.hash !== hash) return; // left while the question was open: merge nothing
+  if (m) {
+    if (!store.save(m.local)) return showError(new Error(SAVE_FAILED));
+    highlightFrom = m.before - m.r.removed;
+    toast(`Pinnwand zusammengeführt: ${newOnes(m.r.added)}${removedNote(m.r.removed)}.${fullNote(m.r.full)}`);
   } else {
     if (!store.save(b)) return showError(new Error(SAVE_FAILED));
     toast(`Pinnwand „${b.title}“ übernommen (${plural(b.contribs.length)}).`);
@@ -672,19 +681,29 @@ $('#card-delete').onclick = async () => {
   if (card?.origin && await removeContrib(card.origin)) $('#dlg-card').close();
 };
 
+// Reads and asks first, then applies everything to a fresh copy with no
+// await in between: a post another tab saves meanwhile is kept.
 async function mergeRun(texts) {
+  const id = current.id;
+  const reads = [];
+  for (const t of texts) reads.push(await codec.readText(t));
+  const answers = new Map(); // other copy of this board -> delete here too?
+  for (const read of reads) {
+    for (const other of read.boards) if (other.id === id) answers.set(other, await askDeletions(other));
+  }
+  if (current?.id !== id) return; // left meanwhile
   reloadCurrent();
   const before = current.contribs.length;
-  const total = { added: 0, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0 };
-  for (const t of texts) {
-    const other = codec.parseBackup(t);
-    const r = other?.id === current.id ? { broken: 0, ...(await mergeBackup(current, other)) } : await codec.mergeText(current, t);
-    for (const k of Object.keys(total)) total[k] += r[k] ?? 0;
+  const total = { added: 0, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0, newer: 0 };
+  for (const read of reads) {
+    const r = codec.applyRead(current, read, { deletions: (other) => answers.get(other) ?? true });
+    for (const k of Object.keys(total)) total[k] += r[k];
   }
   const saved = store.save(current);
   renderBoard(current, before - total.removed);
   renderMergeList();
-  $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt${removedNote(total.removed)}${saved ? '' : ' – nicht gespeichert!'}${total.full ? '.' + fullNote(total.full) : ''}`;
+  const newer = total.newer ? `, ${total.newer} aus neuerer Version: Seite neu laden` : '';
+  $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt${removedNote(total.removed)}${newer}${saved ? '' : ' – nicht gespeichert!'}${total.full ? '.' + fullNote(total.full) : ''}`;
 }
 async function readFiles(files) {
   try {

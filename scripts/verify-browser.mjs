@@ -923,6 +923,86 @@ try {
   check('15 closing the dialog or leaving the wall stops its players', inDialog === 0 && onWall === 2 && left.join() === '0,0', `dialog ${inDialog}, wall before ${onWall}, after ${left}`);
   await mp.close();
 
+  // ---- 16. two tabs: what the other tab saves while a question is open is kept -----------
+  {
+    const tid = newId();
+    const post = (name) => [name, `Gruß von ${name}`, '', ''];
+    const [A, B, C, D] = ['Anna', 'Ben', 'Cara', 'Dora'].map(post);
+    const oB = originOf({ name: 'Ben', text: 'Gruß von Ben', sticker: '', img: '' });
+    const other = [tid, 'Zwei Tabs', 'p', 90, [A, C], [oB]]; // another device deleted Ben and has Cara
+    const tabs = await browser.createBrowserContext();
+    const t1 = await newPage(tabs, 'tab1');
+    const t2 = await newPage(tabs, 'tab2');
+    await t1.goto(`${ORIGIN}/`, { waitUntil: 'networkidle0' });
+    await t2.goto(`${ORIGIN}/`, { waitUntil: 'networkidle0' });
+    await t1.bringToFront(); // waitFor polls on animation frames, which a background tab does not get
+    const seed = () => t1.evaluate((id, t) => localStorage.setItem(`pinnwandii:${id}`, JSON.stringify(t)), tid, [tid, 'Zwei Tabs', 'p', 90, [A, B]]);
+    const addDora = () => t2.evaluate((id, d) => { const t = JSON.parse(localStorage.getItem(`pinnwandii:${id}`)); t[4].push(d); localStorage.setItem(`pinnwandii:${id}`, JSON.stringify(t)); }, tid, D);
+    const storedNames = () => t1.evaluate((id) => JSON.parse(localStorage.getItem(`pinnwandii:${id}`) ?? '[0,0,0,0,[]]')[4].map((e) => e[0]).join(), tid);
+    const openBoard = async () => {
+      await t1.evaluate((id) => { location.hash = `#o=${id}`; }, tid);
+      await waitFor(t1, () => document.querySelectorAll('#wall .card').length === 2);
+    };
+    const toStart = async () => {
+      await t1.evaluate(() => { location.hash = ''; });
+      await waitFor(t1, () => !document.querySelector('#view-start').hidden);
+    };
+    // Einsammeln: the backup's deletion question is open when tab 2 adds Dora
+    await seed();
+    await openBoard();
+    await t1.$eval('#toolbar [data-act=merge]', (b) => b.click());
+    await setValue(t1, '#merge-text', JSON.stringify(other));
+    await t1.$eval('#merge-go', (b) => b.click());
+    await waitFor(t1, () => document.querySelector('#dlg-confirm').open);
+    await addDora();
+    await sleep(300);
+    await t1.$eval('#confirm-ok', (b) => b.click());
+    await waitFor(t1, () => document.querySelector('#merge-result').textContent.length > 0);
+    const r1 = [await storedNames(), await t1.$$eval('#wall .card .name', (n) => n.map((e) => e.textContent).join())];
+    check('16 Einsammeln while another tab saves: its post is kept and the merge stored', r1[0] === 'Anna,Dora,Cara' && r1[1] === r1[0], JSON.stringify(r1));
+    await t1.$eval('#dlg-merge [data-close]', (b) => b.click());
+    // "Sicherung laden" on the start page, same race
+    await toStart();
+    await seed();
+    const twoTabsFile = path.join(OUT, 'two-tabs.json');
+    fs.writeFileSync(twoTabsFile, JSON.stringify(other));
+    await (await t1.$('#restore')).uploadFile(twoTabsFile);
+    await waitFor(t1, () => document.querySelector('#dlg-confirm').open);
+    await addDora();
+    await sleep(300);
+    await t1.$eval('#confirm-ok', (b) => b.click());
+    await waitFor(t1, (id) => location.hash === `#o=${id}`, tid);
+    await sleep(300);
+    const r3 = await storedNames();
+    check('16 "Sicherung laden" while another tab saves: its post is kept', r3 === 'Anna,Dora,Cara', r3);
+    // an admin link whose question is left unanswered: nothing merged, no pull back
+    await toStart();
+    await seed();
+    const otherTok = await encodeBoard({ id: tid, title: 'Zwei Tabs', preset: 'p', hue: 90, contribs: [A, C].map(([name, text]) => ({ name, text, sticker: '', img: '' })), deleted: [oB] });
+    await t1.evaluate((tok) => { location.hash = `#b=${tok}`; }, otherTok);
+    await waitFor(t1, () => document.querySelector('#dlg-confirm').open);
+    await t1.evaluate(() => { location.hash = ''; });
+    await sleep(600);
+    const r2 = [await t1.evaluate(() => location.hash), await visible(t1, '#view-start'), await storedNames()].join('|');
+    check('16 leaving while an admin link asks: nothing merged, no pull back', r2 === '|true|Anna,Ben', r2);
+    // an admin link pasted into Einsammeln merges like a backup
+    const emil = await encodeBoard({ id: tid, title: 'Zwei Tabs', preset: 'p', hue: 90, contribs: ['Anna', 'Emil'].map((name) => ({ name, text: `Gruß von ${name}`, sticker: '', img: '' })), deleted: [] });
+    await openBoard();
+    await t1.$eval('#toolbar [data-act=merge]', (b) => b.click());
+    await setValue(t1, '#merge-text', `Mein Admin-Link: ${ORIGIN}/#b=${emil}`);
+    await t1.evaluate(() => { document.querySelector('#merge-result').textContent = ''; });
+    await t1.$eval('#merge-go', (b) => b.click());
+    await waitFor(t1, () => document.querySelector('#merge-result').textContent.length > 0);
+    const r5 = [await text(t1, '#merge-result'), await storedNames()].join(' | ');
+    check('16 an admin link pasted into Einsammeln merges its cards', r5 === '1 übernommen, 1 doppelt, 0 fremde Pinnwand, 0 defekt | Anna,Ben,Emil', r5);
+    await t1.$eval('#dlg-merge [data-close]', (b) => b.click());
+    // deleted in tab 2 while tab 1 shows it: tab 1 leaves instead of storing it again
+    await t2.evaluate((id) => localStorage.removeItem(`pinnwandii:${id}`), tid);
+    await waitFor(t1, () => !document.querySelector('#view-start').hidden, null, 2000).catch(() => {});
+    check('16 a board deleted in another tab sends this tab to the start page', await visible(t1, '#view-start') && (await storedNames()) === '', await t1.evaluate(() => location.hash.slice(0, 12)));
+    await tabs.close();
+  }
+
   // ---- start page lists saved boards -------------------------------------------------------
   await page.bringToFront();
   await page.goto(`${ORIGIN}/`, { waitUntil: 'networkidle0' });
