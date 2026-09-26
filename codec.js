@@ -404,11 +404,11 @@ function takeDeletions(board, other, { deletions = true, drop = null, protect = 
 function takePosts(board, other, r) {
   for (const e of other.contribs) r[addPost(board, { ...e, origin: e.origin ?? originOf(e) })]++;
 }
-/** The posts a read brings to `board`: those of its copies and its links, with their origins. */
+/** The posts a read brings to `board` (its copies' and its links'), with origins; none deleted here already. */
 export const arriving = (board, read) => [
   ...read.boards.filter((b) => b.id === board.id).flatMap((b) => b.contribs.map((e) => ({ ...e, origin: e.origin ?? originOf(e) }))),
   ...read.contribs.filter((c) => c.id === board.id).map((c) => ({ ...c, origin: originOf(c) })),
-];
+].filter((e) => !(board.deleted ?? []).includes(e.origin));
 
 // A token is "<version>.<base64url>", found after "#c=" or on its own. Token
 // runs may contain whitespace: mail clients wrap long lines. The run is kept
@@ -459,7 +459,7 @@ export async function mergeContribs(board, candidates) {
   return r;
 }
 
-const ADMIN_RE = /^\s*\S*#b=(\d+\.[A-Za-z0-9_-]+)\s*$/;
+const ADMIN_RE = /^\s*\S*#b=(\d+\.[A-Za-z0-9_-]+(?:\s+[A-Za-z0-9_-]+)*)\s*$/; // mail clients wrap long lines
 
 /**
  * Reads whatever a person pasted or dropped, without touching any board:
@@ -481,14 +481,19 @@ export async function readText(text) {
     return read;
   }
   const count = (code) => { read[code === 'version' ? 'newer' : 'broken']++; };
-  const admin = ADMIN_RE.exec(text)?.[1];
-  if (admin) {
-    try {
-      read.boards.push(await decodeBoard(admin));
-    } catch (e) {
-      if (!(e instanceof CodecError)) throw e;
-      count(e.code);
+  const admin = ADMIN_RE.exec(text)?.[1].split(/\s+/);
+  if (admin) { // a word after the link, like a signature, is dropped as for contribution links
+    let code = 'broken';
+    for (let k = admin.length; k > 0 && code === 'broken'; k--) {
+      try {
+        read.boards.push(await decodeBoard(admin.slice(0, k).join('')));
+        code = '';
+      } catch (e) {
+        if (!(e instanceof CodecError)) throw e;
+        if (e.code === 'version') code = 'version';
+      }
     }
+    if (code) count(code);
     return read;
   }
   read.skipped = text.split('#b=').length - 1; // admin links inside other text: read only on their own

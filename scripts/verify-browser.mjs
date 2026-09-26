@@ -640,6 +640,16 @@ try {
   await waitFor(nopop, () => document.querySelector('#toast').getBoundingClientRect().width > 0, null, 1000).catch(() => {}); // "close" comes as a task
   const afterClose = await nopop.$eval('#toast', (t) => { const r = t.getBoundingClientRect(); return r.width > 0 && t.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); });
   check('13 no popovers: a toast right before its dialog closes stays visible', afterClose, await text(nopop, '#toast'));
+  // the share dialog opened from the settings dialog: the toast goes into the one on top
+  await nopop.evaluate(() => { navigator.clipboard.writeText = () => Promise.resolve(); });
+  await nopop.click('#toolbar [data-act=settings]');
+  await waitFor(nopop, () => document.querySelector('#dlg-settings').open);
+  await nopop.click('#admin-link');
+  await waitFor(nopop, () => document.querySelector('#dlg-share').open);
+  await nopop.click('#share-copy');
+  await waitFor(nopop, () => document.querySelector('#toast').textContent === 'Kopiert.');
+  const inTop = await nopop.$eval('#toast', (t) => { const r = t.getBoundingClientRect(); return [t.parentElement.id, t.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))].join(); });
+  check('13 no popovers: a toast goes into the dialog on top (share over settings)', inTop === 'dlg-share,true', inTop);
   await nopop.close();
   // with popovers: a toast shown again while a dialog opened after it is on top
   const restack = await newPage(oldCtx, 'restack');

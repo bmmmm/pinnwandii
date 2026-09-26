@@ -65,6 +65,11 @@ function h(tag, props = {}, ...kids) {
 // popovers (Safari < 17, Chrome < 114) it would show as an empty box all the
 // time and under dialogs, so there it is hidden and moved into the open one.
 const POPOVER = typeof HTMLElement.prototype.showPopover === 'function';
+const modals = []; // open modal dialogs, the one on top last
+function openModal(d) {
+  d.showModal();
+  modals.splice(0, modals.length, ...modals.filter((x) => x.open && x !== d), d);
+}
 if (POPOVER) $('#toast').hidden = false; // hidden in the page until this runs; a closed popover stays hidden
 else $('#toast').removeAttribute('popover');
 let toastTimer;
@@ -75,7 +80,7 @@ function toast(msg) {
     if (t.matches(':popover-open')) t.hidePopover(); // shown again: above a dialog opened meanwhile
     t.showPopover();
   } else {
-    const d = $$('dialog[open]').at(-1); // the confirm dialog comes last, above the one it asks for
+    const d = modals.filter((x) => x.open).at(-1);
     (d ?? document.body).append(t);
     d?.addEventListener('close', () => { if (t.parentNode === d) document.body.append(t); }, { once: true }); // a toast right before the dialog closes stays
     t.hidden = false;
@@ -95,7 +100,7 @@ function confirmDialog(text, { ok = 'Löschen', cancel = 'Abbrechen' } = {}) {
     $('#confirm-cancel').textContent = cancel;
     d.addEventListener('close', () => resolve(d.returnValue === 'ok'), { once: true });
     d.returnValue = '';
-    d.showModal();
+    openModal(d);
   });
 }
 $('#confirm-ok').onclick = () => $('#dlg-confirm').close('ok');
@@ -495,7 +500,7 @@ function openShare(title, hint, text) {
   $('#share-hint').textContent = hint;
   $('#share-text').value = text;
   $('#share-share').hidden = !navigator.share;
-  $('#dlg-share').showModal();
+  openModal($('#dlg-share'));
 }
 $('#share-share').onclick = () => shareText($('#share-text').value);
 $('#share-copy').onclick = () => copyText($('#share-text').value);
@@ -515,7 +520,7 @@ function openMerge() {
   $('#merge-text').value = '';
   $('#merge-result').textContent = '';
   renderMergeList();
-  $('#dlg-merge').showModal();
+  openModal($('#dlg-merge'));
 }
 function renderMergeList() {
   const count = new Map();
@@ -579,7 +584,7 @@ function openCardDialog(c, origin) {
   showCardMedia();
   for (const b of ['#card-earlier', '#card-later', '#card-delete']) $(b).hidden = !origin;
   if (origin) updateMoveButtons(cardIndex());
-  $('#dlg-card').showModal();
+  openModal($('#dlg-card'));
 }
 function openCard(origin) {
   reloadCurrent();
@@ -852,7 +857,7 @@ function openBuild() {
   $('#build-share').hidden = !navigator.canShare;
   $('#build-video-share').hidden = !navigator.canShare;
   $('#build-videos').hidden = !hasPlayable(current);
-  $('#dlg-build').showModal();
+  openModal($('#dlg-build'));
 }
 $('#build-preview').onclick = async () => {
   const f = await pageFile(current);
@@ -893,7 +898,7 @@ function openSettings() {
   field(settingsForm, 'preset').value = current.preset;
   field(settingsForm, 'hue').value = current.hue;
   $('#admin-note').textContent = '';
-  $('#dlg-settings').showModal();
+  openModal($('#dlg-settings'));
 }
 function applySettingsForm(b = current) {
   b.title = field(settingsForm, 'title').value.trim() || b.title;

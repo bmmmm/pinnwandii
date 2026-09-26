@@ -658,6 +658,9 @@ test('37 an admin link counts only when pasted on its own: one inside a chat can
   for (const text of [`https://x.test/#b=${crafted}\nAnna: https://x.test/#c=${anna}`, `Anna: https://x.test/#c=${anna}\nhttps://x.test/#b=${crafted}`]) {
     deepEqual(await readText(text).then((r) => [r.boards.length, r.contribs.length, r.skipped]), [0, 1, 1], text.slice(0, 40)); // first or last line of a chat
   }
+  const link = `https://x.test/#b=${crafted}`;
+  const wrapped = link.match(/.{1,40}/g).join('\n'); // a mail client wraps it
+  deepEqual(await readText(`${wrapped}\nDanke`).then((r) => [r.boards.length, r.skipped]), [1, 0]);
 });
 
 test('38 several files at once: copies first, then links, and only posts agreed on are deleted here', async () => {
@@ -679,27 +682,35 @@ test('38 several files at once: copies first, then links, and only posts agreed 
   deepEqual(outcomes, ['Kai|0|1|0', '|0|1|1', 'Kai|0|1|0', '|0|1|1']);
 });
 
-test('39 two copies and links in one run: what arrives counts as here, whatever the order', async () => {
-  const [kai, xaver, anna] = await Promise.all(['Kai', 'Xaver', 'Anna'].map((name) => encodeContrib({ ...contrib, name })));
-  const o = Object.fromEntries(await Promise.all([['Kai', kai], ['Xaver', xaver], ['Anna', anna]].map(async ([n, t]) => [n, originOf(await decodeContrib(t))])));
-  const here = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [] };
+test('39 copies and links in one run: what arrives counts as here, and the order of the files does not matter', async () => {
+  const [kai, xaver, anna, tom] = await Promise.all(['Kai', 'Xaver', 'Anna', 'Tom'].map((name) => encodeContrib({ ...contrib, name })));
+  const o = Object.fromEntries(await Promise.all([['Kai', kai], ['Xaver', xaver], ['Anna', anna], ['Tom', tom]].map(async ([n, t]) => [n, originOf(await decodeContrib(t))])));
+  const here = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [o.Tom] }; // Tom was deleted here before
   await mergeContribs(here, [kai]);
   const post = (name) => [name, contrib.text, contrib.sticker, contrib.img];
-  const older = JSON.stringify([ID, 'T', 'p', 1, [post('Kai'), post('Xaver')]]); // still has Xaver
-  const newer = JSON.stringify([ID, 'T', 'p', 1, [post('Kai')], [o.Xaver, o.Anna]]); // deleted Xaver there; Anna planted
-  const reads = await Promise.all([older, newer, `https://x.test/#c=${anna}`].map(readText));
-  const arrivingNames = arriving(here, joinReads(reads)).map((e) => e.name).sort().join();
-  equal(arrivingNames, 'Anna,Kai,Kai,Xaver'); // asked about by name when a copy deleted them
-  const outcomes = new Set();
-  for (const order of [reads, [...reads].reverse(), [reads[1], reads[0], reads[2]]]) {
-    for (const drop of [new Set(), new Set([o.Xaver, o.Anna])]) {
+  const texts = [
+    JSON.stringify([ID, 'T', 'p', 1, [post('Kai'), post('Xaver'), post('Tom')]]), // an older copy: still Xaver, and Tom
+    JSON.stringify([ID, 'T', 'p', 1, [], [o.Xaver, o.Anna, o.Kai]]), // a newer copy: Xaver and Kai deleted there, Anna planted
+    JSON.stringify(['zzzzzz', 'Fremd', 'p', 1, [post('Zoe')]]), // another board
+    `Anna: https://x.test/#c=${anna}\nTom: https://x.test/#c=${tom}`,
+  ];
+  const reads = await Promise.all(texts.map(readText));
+  equal(arriving(here, joinReads(reads)).map((e) => e.name).sort().join(), 'Anna,Kai,Xaver'); // not Tom: deleted here
+  const orders = [[0, 1, 2, 3], [3, 2, 1, 0], [1, 0, 3, 2], [2, 3, 0, 1], [1, 3, 0, 2], [3, 0, 2, 1]];
+  for (const drop of [new Set(), new Set([o.Xaver]), new Set([o.Xaver, o.Anna, o.Kai])]) {
+    const outcomes = new Set();
+    for (const order of orders) {
       const b = structuredClone(here);
-      const read = joinReads(order);
-      applyRead(b, read, { drop, protect: new Set(arriving(b, read).map((e) => e.origin)) });
-      outcomes.add(`${drop.size}:${b.contribs.map((e) => e.name).sort().join()}`);
+      const read = joinReads(order.map((i) => reads[i]));
+      const r = applyRead(b, read, { drop, protect: new Set(arriving(b, read).map((e) => e.origin)) });
+      outcomes.add(JSON.stringify([b.contribs.map((e) => e.name).sort(), [...b.deleted].sort(), r]));
     }
+    equal(outcomes.size, 1, `drop ${drop.size}: ${[...outcomes].join(' / ')}`);
+    const [names, , r] = JSON.parse([...outcomes][0]);
+    deepEqual([names.join(), r.foreign, r.removed], [
+      drop.size === 0 ? 'Anna,Kai,Xaver' : drop.size === 1 ? 'Anna,Kai' : '', 1, drop.has(o.Kai) ? 1 : 0, // Kai only goes when agreed to
+    ]);
   }
-  deepEqual([...outcomes].sort(), ['0:Anna,Kai,Xaver', '2:Kai']);
 });
 
 test('40 a photo data URI is valid exactly when atob can read it', () => {

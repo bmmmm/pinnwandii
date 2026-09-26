@@ -62,9 +62,11 @@ Deletions made on another device travel with its admin link or backup: a
 card here, or one arriving with the same paste or files, is only deleted
 after the app asks, by name, whether to delete it here too (each card once
 per run). Several files are applied in fixed steps (deletions, then the
-copies' cards, then the links), so their order does not matter. Where both
-devices edited the same card, the device you merge into keeps
-its version. A card's origin is only written where it does not follow from
+copies' cards, then the links), so which cards end up on the board, and
+which are remembered as deleted, does not depend on their order; only the
+order of new cards does, and which version wins when two copies edited a
+card this device does not have yet. Where both devices edited the same
+card, the device you merge into keeps its version. A card's origin is only written where it does not follow from
 the card itself, which keeps admin links and backups 11–13 characters a
 card shorter.
 
