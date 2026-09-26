@@ -59,9 +59,11 @@ admin link, neither brings a deleted card back nor adds an edited one
 twice. A card the organizer writes comes from no link and gets a random
 origin, so the same card written again after a deletion is new.
 Deletions made on another device travel with its admin link or backup: a
-card still here is only deleted after the app asks, by name, whether to
-delete it here too (several files at once ask once, and are applied copies
-first, links second, so their order does not matter); where both devices edited the same card, the device you merge into keeps
+card here, or one arriving with the same paste or files, is only deleted
+after the app asks, by name, whether to delete it here too (each card once
+per run). Several files are applied in fixed steps (deletions, then the
+copies' cards, then the links), so their order does not matter. Where both
+devices edited the same card, the device you merge into keeps
 its version. A card's origin is only written where it does not follow from
 the card itself, which keeps admin links and backups 11–13 characters a
 card shorter.

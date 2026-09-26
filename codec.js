@@ -162,6 +162,8 @@ const ORIGIN_RE = /^[A-Za-z0-9_-]{8}$/;
 const URL_RE = /^https:\/\/\S+$/;
 const DATA_RE = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/;
 const isStr = (v, max, min = 1) => typeof v === 'string' && v.length >= min && v.length <= max;
+// What atob() decodes: padded to a multiple of 4, or unpadded and not 4n + 1.
+const canAtob = (b64) => b64.length % 4 === 0 || (b64.length % 4 !== 1 && !b64.includes('='));
 const dataUriBytes = (b64) =>
   Math.floor((b64.length * 3) / 4) - (b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0);
 
@@ -181,7 +183,7 @@ function checkImg(img, wire) {
   // JSON is hand-made, and one the tail cannot carry would break every admin
   // link built from the board.
   const m = !wire && DATA_RE.exec(img);
-  if (m && m[1].length % 4 !== 1 && dataUriBytes(m[1]) <= LIMITS.photo) return; // 4n + 1 characters are no base64
+  if (m && canAtob(m[1]) && dataUriBytes(m[1]) <= LIMITS.photo) return;
   fail('invalid', `Bild, Video oder GIF: ein https-Link mit höchstens ${LIMITS.url} Zeichen oder ein kleines Foto.`);
 }
 function checkEntry(t, wire = false) {
@@ -372,28 +374,41 @@ export const deletedIn = (board, other) =>
 
 /**
  * Merges another copy of the same board (admin link, backup) into `board`:
- * posts deleted there are deleted here too (a post still here only if it is
- * in `drop`, when given, else only with `deletions`; the others are just
- * remembered as deleted),
- * posts known here stay as they are here (edits on this device win), new
- * posts are added.
+ * posts deleted there are deleted here too, posts known here stay as they
+ * are here (edits on this device win), new posts are added. A post that is
+ * visible (here, or in `protect`: arriving in the same run) is only deleted
+ * if it is in `drop` (agreed to by name), when given, else with `deletions`;
+ * the others are just remembered as deleted.
  */
-export function mergeBoard(board, other, { deletions = true, drop = null } = {}) {
+export function mergeBoard(board, other, opts) {
   const r = { added: 0, dupes: 0, foreign: 0, full: 0, removed: 0 };
   if (other.id !== board.id) {
     r.foreign = other.contribs.length;
     return r;
   }
-  for (const origin of other.deleted ?? []) {
-    const here = board.contribs.some((e) => e.origin === origin);
-    if (here && !(drop ? drop.has(origin) : deletions)) continue; // kept here: only what was agreed goes
-    const before = board.contribs.length;
-    deletePost(board, origin);
-    r.removed += before - board.contribs.length;
-  }
-  for (const e of other.contribs) r[addPost(board, { ...e, origin: e.origin ?? originOf(e) })]++;
+  r.removed = takeDeletions(board, other, opts);
+  takePosts(board, other, r);
   return r;
 }
+function takeDeletions(board, other, { deletions = true, drop = null, protect = null } = {}) {
+  let removed = 0;
+  for (const origin of other.deleted ?? []) {
+    const visible = protect?.has(origin) || board.contribs.some((e) => e.origin === origin);
+    if (visible && !(drop ? drop.has(origin) : deletions)) continue; // kept: only what was agreed goes
+    const before = board.contribs.length;
+    deletePost(board, origin);
+    removed += before - board.contribs.length;
+  }
+  return removed;
+}
+function takePosts(board, other, r) {
+  for (const e of other.contribs) r[addPost(board, { ...e, origin: e.origin ?? originOf(e) })]++;
+}
+/** The posts a read brings to `board`: those of its copies and its links, with their origins. */
+export const arriving = (board, read) => [
+  ...read.boards.filter((b) => b.id === board.id).flatMap((b) => b.contribs.map((e) => ({ ...e, origin: e.origin ?? originOf(e) }))),
+  ...read.contribs.filter((c) => c.id === board.id).map((c) => ({ ...c, origin: originOf(c) })),
+];
 
 // A token is "<version>.<base64url>", found after "#c=" or on its own. Token
 // runs may contain whitespace: mail clients wrap long lines. The run is kept
@@ -459,7 +474,7 @@ const ADMIN_RE = /^\s*\S*#b=(\d+\.[A-Za-z0-9_-]+)\s*$/;
  * newer app.
  */
 export async function readText(text) {
-  const read = { boards: [], contribs: [], broken: 0, newer: 0 };
+  const read = { boards: [], contribs: [], broken: 0, newer: 0, skipped: 0 };
   const backup = parseBackup(text);
   if (backup) {
     read.boards.push(backup);
@@ -476,6 +491,7 @@ export async function readText(text) {
     }
     return read;
   }
+  read.skipped = text.split('#b=').length - 1; // admin links inside other text: read only on their own
   const cands = extractContribs(text);
   for (const cand of cands) {
     const { c, code } = await decodeCandidate(cand);
@@ -488,16 +504,17 @@ export async function readText(text) {
 
 /**
  * Applies what readText found (one read, or several joined with joinReads) to
- * a board, with no await in between: first every copy of a board (mergeBoard,
- * with `opts`), then the contributions, so the outcome does not depend on the
- * order of the files. Returns the counts.
+ * a board, with no await in between, in fixed steps so the order of the files
+ * does not matter: the deletions of every copy of this board (on the posts
+ * that were here; see mergeBoard for `opts`), then the posts of the copies,
+ * then the contributions. Returns the counts.
  */
 export function applyRead(board, read, opts) {
-  const r = { added: 0, dupes: 0, foreign: 0, broken: read.broken, full: 0, removed: 0, newer: read.newer };
-  for (const other of read.boards) {
-    const m = mergeBoard(board, other, opts);
-    for (const k of Object.keys(m)) r[k] += m[k];
-  }
+  const r = { added: 0, dupes: 0, foreign: 0, broken: read.broken, full: 0, removed: 0, newer: read.newer, skipped: read.skipped };
+  const copies = read.boards.filter((b) => b.id === board.id);
+  for (const other of read.boards) if (other.id !== board.id) r.foreign += other.contribs.length;
+  for (const other of copies) r.removed += takeDeletions(board, other, opts);
+  for (const other of copies) takePosts(board, other, r);
   for (const c of read.contribs) r[addContrib(board, c)]++;
   return r;
 }
@@ -506,6 +523,7 @@ export function applyRead(board, read, opts) {
 export const joinReads = (reads) => ({
   boards: reads.flatMap((x) => x.boards), contribs: reads.flatMap((x) => x.contribs),
   broken: reads.reduce((n, x) => n + x.broken, 0), newer: reads.reduce((n, x) => n + x.newer, 0),
+  skipped: reads.reduce((n, x) => n + x.skipped, 0),
 });
 
 /** Merges pasted or dropped text into a board: readText, then applyRead. */

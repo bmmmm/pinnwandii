@@ -21,13 +21,15 @@ const fullNote = (n) => (n ? ` ${n} nicht übernommen: Pinnwand voll (höchstens
 const removedNote = (n) => (n ? `, ${n} gelöscht` : '');
 const NO_MEDIA = 'Dieser Link zeigt auf kein einzelnes Video oder GIF: Öffne es und teile dessen Link.';
 
-// Another copy of a board (backup, admin link) deletes a post here only when
-// asked by name: a crafted file could otherwise make cards disappear for
-// good. Returns the origins agreed on; `asked` keeps a post from being asked
-// about twice in one run.
-async function askDeletions(other, asked = new Set()) {
+// Another copy of a board (backup, admin link) deletes a post here, or one
+// arriving in the same run (`arriving`), only when asked by name: a crafted
+// file could otherwise make cards disappear for good. Returns the origins
+// agreed on; `asked` keeps a post from being asked about twice in one run.
+async function askDeletions(other, asked = new Set(), arriving = []) {
   const local = store.load(other.id);
-  const gone = (local ? codec.deletedIn(local, other) : []).filter((e) => !asked.has(e.origin));
+  const seen = new Set();
+  const gone = (local ? codec.deletedIn({ ...local, contribs: [...local.contribs, ...arriving] }, other) : [])
+    .filter((e) => !asked.has(e.origin) && !seen.has(e.origin) && seen.add(e.origin));
   if (!gone.length) return [];
   for (const e of gone) asked.add(e.origin);
   const names = gone.map((e) => e.name).join(', ');
@@ -73,7 +75,7 @@ function toast(msg) {
     if (t.matches(':popover-open')) t.hidePopover(); // shown again: above a dialog opened meanwhile
     t.showPopover();
   } else {
-    const d = $('dialog[open]');
+    const d = $$('dialog[open]').at(-1); // the confirm dialog comes last, above the one it asks for
     (d ?? document.body).append(t);
     d?.addEventListener('close', () => { if (t.parentNode === d) document.body.append(t); }, { once: true }); // a toast right before the dialog closes stays
     t.hidden = false;
@@ -709,21 +711,23 @@ async function mergeRun(texts) {
   const reads = [];
   for (const t of texts) reads.push(await codec.readText(t));
   const read = codec.joinReads(reads);
+  const arriving = codec.arriving(current, read); // greetings and posts of copies in this run
   const drop = new Set();
   const asked = new Set();
   for (const other of read.boards) {
     if (current?.id !== id) return; // left meanwhile: no more questions
-    if (other.id === id) for (const origin of await askDeletions(other, asked)) drop.add(origin);
+    if (other.id === id) for (const origin of await askDeletions(other, asked, arriving)) drop.add(origin);
   }
   if (current?.id !== id) return;
   reloadCurrent();
   const before = current.contribs.length;
-  const total = codec.applyRead(current, read, { drop });
+  const total = codec.applyRead(current, read, { drop, protect: new Set(arriving.map((e) => e.origin)) });
   const saved = store.save(current);
   renderBoard(current, before - total.removed);
   renderMergeList();
   const newer = total.newer ? `, ${total.newer} aus neuerer Version: Seite neu laden` : '';
-  $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt${removedNote(total.removed)}${newer}${saved ? '' : ' – nicht gespeichert!'}${total.full ? '.' + fullNote(total.full) : ''}`;
+  const skipped = total.skipped ? `, Admin-Link übergangen: bitte allein einfügen` : '';
+  $('#merge-result').textContent = `${total.added} übernommen, ${total.dupes} doppelt, ${total.foreign} fremde Pinnwand, ${total.broken} defekt${removedNote(total.removed)}${newer}${skipped}${saved ? '' : ' – nicht gespeichert!'}${total.full ? '.' + fullNote(total.full) : ''}`;
 }
 async function readFiles(files) {
   try {

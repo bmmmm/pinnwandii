@@ -1053,8 +1053,9 @@ try {
     const r5 = [await text(t1, '#merge-result'), await storedNames()].join(' | ');
     check('16 an admin link pasted into Einsammeln merges its cards', r5 === '1 übernommen, 1 doppelt, 0 fremde Pinnwand, 0 defekt | Anna,Ben,Emil', r5);
     await t1.$eval('#dlg-merge [data-close]', (b) => b.click());
-    // two files at once, a greeting and the other device's backup that deleted it and a post
-    // here: only the post here is asked about, and the file order does not matter
+    // three files at once: a greeting, the other device's backup that deleted it and the post
+    // here, and an older backup that deleted the post here too: one question names both, the
+    // post here and the arriving greeting, and "Hier behalten" keeps both
     const kaiTuple = post('Kai');
     const oKai = originOf({ name: 'Kai', text: 'Gruß von Kai', sticker: '', img: '' });
     const xaverTok = await encodeContrib({ id: tid, name: 'Xaver', text: 'Gruß von Xaver', sticker: '', img: '' });
@@ -1063,19 +1064,27 @@ try {
     const killFile = path.join(OUT, 'zwei-tabs-kai.json');
     fs.writeFileSync(xaverFile, `Glückwunsch von Xaver: ${ORIGIN}/#c=${xaverTok}`);
     fs.writeFileSync(killFile, JSON.stringify([tid, 'Zwei Tabs', 'p', 90, [], [oKai, oXaver]]));
+    const kill2File = path.join(OUT, 'zwei-tabs-kai-alt.json');
+    fs.writeFileSync(kill2File, JSON.stringify([tid, 'Zwei Tabs', 'p', 90, [], [oKai]]));
     await t1.evaluate((id, t) => localStorage.setItem(`pinnwandii:${id}`, JSON.stringify(t)), tid, [tid, 'Zwei Tabs', 'p', 90, [kaiTuple]]);
     await t1.evaluate(() => { location.hash = ''; });
     await t1.evaluate((id) => { location.hash = `#o=${id}`; }, tid);
     await waitFor(t1, () => document.querySelectorAll('#wall .card').length === 1);
     await t1.$eval('#toolbar [data-act=merge]', (b) => b.click());
     await t1.evaluate(() => { document.querySelector('#merge-result').textContent = ''; });
-    await (await t1.$('#merge-files')).uploadFile(xaverFile, killFile);
+    await t1.evaluate(() => {
+      window.__asked = [];
+      const show = HTMLDialogElement.prototype.showModal;
+      HTMLDialogElement.prototype.showModal = function () { if (this.id === 'dlg-confirm') window.__asked.push(document.querySelector('#confirm-text').textContent); return show.call(this); };
+    });
+    await (await t1.$('#merge-files')).uploadFile(xaverFile, killFile, kill2File);
     await waitFor(t1, () => document.querySelector('#dlg-confirm').open);
-    const asked = await text(t1, '#confirm-text');
     await t1.$eval('#confirm-cancel', (b) => b.click());
+    await sleep(300);
+    if (await t1.evaluate(() => document.querySelector('#dlg-confirm').open)) await t1.$eval('#confirm-cancel', (b) => b.click()); // a second question would be one too many
     await waitFor(t1, () => document.querySelector('#merge-result').textContent.length > 0);
-    const r6 = [asked, await text(t1, '#merge-result'), await storedNames()].join(' | ');
-    check('16 two files at once: asked only about the post here, kept, the greeting deleted there stays out', r6 === 'Dort wurde 1 Beitrag gelöscht (Kai). Hier auch löschen? | 0 übernommen, 1 doppelt, 0 fremde Pinnwand, 0 defekt | Kai', r6);
+    const r6 = [(await t1.evaluate(() => window.__asked)).join(' + '), await text(t1, '#merge-result'), await storedNames()].join(' | ');
+    check('16 three files at once: one question names the post here and the arriving greeting, both kept', r6 === 'Dort wurden 2 Beiträge gelöscht (Kai, Xaver). Hier auch löschen? | 1 übernommen, 0 doppelt, 0 fremde Pinnwand, 0 defekt | Kai,Xaver', r6);
     await t1.$eval('#dlg-merge [data-close]', (b) => b.click());
     // deleted in tab 2 while tab 1 shows it: tab 1 leaves instead of storing it again
     await t2.evaluate((id) => localStorage.removeItem(`pinnwandii:${id}`), tid);
