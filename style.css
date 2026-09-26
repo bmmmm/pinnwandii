@@ -130,6 +130,11 @@ button, .button {
   line-height: 1.3;
 }
 button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+/* file inputs stay in the tab order, invisible inside their label button */
+label.button { position: relative; }
+label.button > input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; opacity: 0; pointer-events: none; }
+label.button:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+@supports not selector(:has(*)) { label.button:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; } }
 button.danger { color: #b00020; border-color: #b0002066; }
 button:hover, .button:hover { filter: brightness(0.95); }
 .list { list-style: none; padding: 0; margin: 0; }

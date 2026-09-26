@@ -173,7 +173,7 @@ const rotOf = (i) => (((i * 7) % 5) - 2) * 0.7;
 // A card's picture: photos, sketches and image links as <img>; a YouTube
 // video or a Tenor GIF as a link to it, which playInline() (media.js) turns
 // into the player. Tenor's player loads trackers, so it waits for the click.
-function renderMedia(img, doc) {
+function renderMedia(img, doc, name = '') {
   const m = mediaOf(img);
   const pic = (src, loading = 'lazy') => {
     const e = doc.createElement('img');
@@ -191,11 +191,15 @@ function renderMedia(img, doc) {
   a.target = '_blank';
   a.rel = 'noopener';
   a.dataset.embed = m.embed;
-  a.dataset.title = m.kind === 'youtube' ? 'YouTube-Video' : 'GIF von Tenor';
+  const what = m.kind === 'youtube' ? 'Video' : 'GIF';
+  a.dataset.title = name ? `${what} von ${name}` : `${what} von ${m.kind === 'youtube' ? 'YouTube' : 'Tenor'}`; // the player's title: several on a wall
   if (m.kind === 'youtube') {
     const play = doc.createElement('span');
     play.className = 'play';
-    play.textContent = '▶ Video ansehen';
+    const icon = doc.createElement('span');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = '▶ ';
+    play.append(icon, 'Video ansehen');
     a.append(pic(m.thumb, doc === document ? 'lazy' : 'eager'), play); // a built page may be printed unscrolled
   } else {
     a.textContent = 'GIF von Tenor laden (lädt Inhalte von Tenor/Google)';
@@ -209,7 +213,7 @@ function renderCard(c, i, doc = document) {
   card.className = 'card';
   card.style.setProperty('--i', i);
   card.style.setProperty('--r', rotOf(i));
-  const media = c.img && renderMedia(c.img, doc);
+  const media = c.img && renderMedia(c.img, doc, c.name);
   if (media) card.append(media);
   if (c.sticker) {
     const s = doc.createElement('span');
@@ -546,7 +550,7 @@ function openCard(origin) {
 }
 const openNewCard = () => openCardDialog({ name: '', text: '', sticker: '', img: '' }, null);
 function showCardMedia() {
-  $('#card-media').replaceChildren((card.img && renderMedia(card.img, document)) || '');
+  $('#card-media').replaceChildren((card.img && renderMedia(card.img, document, field(cardForm, 'name').value.trim())) || '');
   $('#card-nomedia').hidden = !card.img && !field(cardForm, 'url').value;
   if (card.img === null) $('#card-note').textContent = NO_MEDIA;
 }
@@ -569,7 +573,10 @@ function setCardMedia(img, url, delay = 0) {
   else showCardMedia();
 }
 field(cardForm, 'url').addEventListener('input', (e) => setCardMedia(parseMediaLink(e.target.value), e.target.value, 300));
-$('#card-nomedia').onclick = () => setCardMedia('', '');
+$('#card-nomedia').onclick = () => {
+  setCardMedia('', '');
+  field(cardForm, 'photo').focus(); // the button hides itself; keep the keyboard in the dialog
+};
 field(cardForm, 'photo').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';

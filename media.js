@@ -76,7 +76,7 @@ export function parseMediaLink(input) {
   const raw = String(input ?? '').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '').trim(); // share sheets add invisible characters
   let u;
   try {
-    u = new URL(/^[a-z][a-z\d+.-]*:/i.test(raw) ? raw : `https://${raw}`);
+    u = new URL(/^[a-z][a-z\d+.-]*:(?!\d)/i.test(raw) ? raw : `https://${raw}`); // host:port is no scheme
   } catch {
     return raw;
   }

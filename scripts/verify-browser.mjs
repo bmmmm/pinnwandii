@@ -85,6 +85,8 @@ const setValue = (page, sel, value) => page.evaluate((sel, value) => {
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }, sel, value);
 const text = (page, sel) => page.$eval(sel, (e) => e.textContent);
+// A file input the keyboard can reach (focus lands on it), invisible inside its label button.
+const focusable = (page, sel) => page.$eval(sel, (e) => { e.focus(); return document.activeElement === e && getComputedStyle(e).opacity === '0' && !!e.closest('label.button'); });
 const visible = (page, sel) => page.$eval(sel, (e) => !e.hidden && getComputedStyle(e).display !== 'none').catch(() => false);
 const cardCount = (page) => page.$$eval('#wall .card', (c) => c.length);
 const waitFor = (page, fn, arg, ms = 5000) => page.waitForFunction(fn, { timeout: ms }, arg);
@@ -172,6 +174,12 @@ try {
   await bcdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: path.join(OUT, 'downloads'), browserContextId: org.id, eventsEnabled: true });
   await page.goto(`${ORIGIN}/`, { waitUntil: 'networkidle0' });
   check('1 start view shown', await visible(page, '#view-start'));
+  check('1 "Sicherung laden" reachable by keyboard', await focusable(page, '#restore'));
+  await page.keyboard.press('Tab'); // keyboard focus: the ring shows on the label
+  await page.keyboard.down('Shift'); await page.keyboard.press('Tab'); await page.keyboard.up('Shift');
+  const ring = await page.$eval('#restore', (e) => [document.activeElement === e, getComputedStyle(e.closest('label')).outlineStyle].join());
+  check('1 a focused file input shows a ring on its button', ring === 'true,solid', ring);
+  await page.evaluate(() => document.activeElement.blur());
   const images = await makeImages(page);
   await setValue(page, '#new-form input[name=title]', 'Alles Gute zum 80., Oma!');
   await page.click('#new-form input[value=b]');
@@ -201,6 +209,7 @@ try {
   await setValue(guest, '#write-form input[name=name]', 'Anna Müller');
   await setValue(guest, '#write-form textarea[name=text]', 'Liebe Oma, alles Gute! 🎉\nWir feiern bald zusammen.');
   await guest.click('#sticker-row button:nth-child(2)');
+  check('2 "Foto wählen" reachable by keyboard', await focusable(guest, '#write-form input[name=photo]'));
   const photoInput = await guest.$('#write-form input[name=photo]');
   const t0 = Date.now();
   await photoInput.uploadFile(images.jpg);
@@ -344,6 +353,7 @@ try {
   const r1 = await text(page, '#merge-result');
   check('4 merge result line', r1 === '3 übernommen, 1 doppelt, 1 fremde Pinnwand, 1 defekt', r1);
   check('4 four cards', (await cardCount(page)) === 4);
+  check('4 "Dateien wählen" reachable by keyboard', await focusable(page, '#merge-files'));
   await (await page.$('#merge-files')).uploadFile(chatFile);
   await waitFor(page, () => document.querySelector('#merge-result').textContent.startsWith('0 '));
   const r2 = await text(page, '#merge-result');
@@ -604,7 +614,7 @@ try {
   await openCard('Anna');
   const photoShown = await cp.evaluate(() => !!document.querySelector('#card-media img[src^="data:image/jpeg"]')) && await visible(cp, '#card-nomedia');
   await cp.$eval('#card-nomedia', (b) => b.click());
-  const cleared = await cp.evaluate(() => document.querySelector('#card-media').children.length === 0 && document.querySelector('#card-nomedia').hidden);
+  const cleared = await cp.evaluate(() => document.querySelector('#card-media').children.length === 0 && document.querySelector('#card-nomedia').hidden && document.activeElement === document.querySelector('#card-form input[name=photo]'));
   await cp.$eval('#card-save', (b) => b.click());
   // a photo added in the dialog: saving right away waits for it, also for one picked while it waits
   await openCard('Ben');
@@ -670,7 +680,7 @@ try {
   const expected = JSON.stringify([['Anna M.', 'Gruß von Anna', '', ''], ['Dora', 'Gruß von Dora', '', ''], ['Ben', 'Gruß von Ben, korrigiert', '🎈', 'video'], ['Orga', 'Von uns allen', '', 'img']]);
   const afterEdit = JSON.stringify(await wallState());
   await shot(cp, '14-curated');
-  check('14 edit text + sticker, remove photo, add video, move, delete, own card, Enter saves', photoShown && cleared && afterEdit === expected, afterEdit);
+  check('14 edit text + sticker, remove photo, add video, move, delete, own card, Enter saves', photoShown && cleared && afterEdit === expected, `${afterEdit}; photo shown ${photoShown}, removed + focus kept ${cleared}`);
   check('14 curated board is stored with origins and deletions', (await storedShape()).startsWith('6,'), await storedShape());
   const again = await pasteChat();
   const afterMerge = JSON.stringify(await wallState());
@@ -772,13 +782,14 @@ try {
     await mp.$eval(`#wall .card:nth-child(${n}) button.edit`, (b) => b.click());
     await waitFor(mp, () => document.querySelector('#dlg-card').open);
     await waitFor(mp, () => [...document.querySelectorAll('#card-media img')].every((i) => i.complete)).catch(() => {});
-    const r = await mp.evaluate(() => [document.querySelector('#card-media a.media')?.className ?? '', document.querySelector('#card-media img')?.naturalWidth > 0 ? document.querySelector('#card-media img').src : '']);
+    const r = await mp.evaluate(() => [document.querySelector('#card-media a.media')?.className ?? '', document.querySelector('#card-media img')?.naturalWidth > 0 ? document.querySelector('#card-media img').src : '', document.querySelector('#card-media a.media')?.dataset.title ?? '']);
     await mp.$eval('#dlg-card [data-close]', (b) => b.click());
     return r;
   };
   const dialogMedia = JSON.stringify([await dialogPreview(1), await dialogPreview(3)]);
-  check('15 card dialog: video thumbnail and Tenor placeholder as on the wall', dialogMedia === JSON.stringify([['media video', 'https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg'], ['media gif-tenor', '']]), dialogMedia);
+  check('15 card dialog: video thumbnail and Tenor placeholder as on the wall', dialogMedia === JSON.stringify([['media video', 'https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg', 'Video von Vera'], ['media gif-tenor', '', 'GIF von Tia']]), dialogMedia);
   check('15 no player loaded before a click', players.length === 0, JSON.stringify(players));
+  check('15 the play badge\'s arrow is not read aloud', await mp.$eval('#wall a.media.video .play', (p) => p.querySelector('[aria-hidden="true"]')?.textContent === '▶ ' && p.textContent === '▶ Video ansehen'));
   await shot(mp, '15-media');
   await mp.bringToFront();
   await mp.click('#wall .card:nth-child(1) a.media');
@@ -789,7 +800,7 @@ try {
   });
   await sleep(300);
   const ytReq = players.find((p) => p.url === YT_EMBED);
-  check('15 click: player with start, focused, link hidden, 16:9', played.src === YT_EMBED && played.title === 'YouTube-Video' && played.focused && played.linkHidden && Math.abs(played.w / played.h - 16 / 9) < 0.02, JSON.stringify(played));
+  check('15 click: player with start, focused, link hidden, 16:9', played.src === YT_EMBED && played.title === 'Video von Vera' && played.focused && played.linkHidden && Math.abs(played.w / played.h - 16 / 9) < 0.02, JSON.stringify(played));
   check('15 player request carries the page origin as Referer (YouTube refuses without)', ytReq?.referer === `${SITE}/`, JSON.stringify(players));
   await mp.emulateMediaType('print');
   const printed = await mp.evaluate(() => [getComputedStyle(document.querySelector('#wall iframe')).display, getComputedStyle(document.querySelector('#wall .card:nth-child(1) a.media')).display]);
@@ -799,7 +810,7 @@ try {
   await waitFor(mp, () => !!document.querySelector('#wall .card:nth-child(3) iframe'));
   const tenorFrame = await mp.evaluate(() => { const f = document.querySelector('#wall .card:nth-child(3) iframe'); return [f.src, f.title, f.offsetWidth - f.offsetHeight]; });
   await sleep(300);
-  check('15 Tenor: player only after the click, square', tenorFrame[0] === TENOR_EMBED && tenorFrame[1] === 'GIF von Tenor' && Math.abs(tenorFrame[2]) <= 1 && players.some((p) => p.url === TENOR_EMBED), JSON.stringify(tenorFrame));
+  check('15 Tenor: player only after the click, square', tenorFrame[0] === TENOR_EMBED && tenorFrame[1] === 'GIF von Tia' && Math.abs(tenorFrame[2]) <= 1 && players.some((p) => p.url === TENOR_EMBED), JSON.stringify(tenorFrame));
   await shot(mp, '15-played');
   // the print version (finished page without scripts) keeps the thumbnail links
   await bcdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: path.join(OUT, 'downloads'), browserContextId: mCtx.id, eventsEnabled: true });
