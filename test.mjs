@@ -615,3 +615,27 @@ test('33 the videos file: its script is playInline, allowed by its hash; the onl
   const none = { ...small, contribs: [small.contribs[0], { ...video, img: GIPHY }] };
   deepEqual([hasPlayable(none), await viewToken(none, 32_000)], [false, null], 'nothing to play');
 });
+
+test('34 a photo inside a token travels only in the tail: a data URI in its JSON is refused', async () => {
+  for (const img of ['data:image/jpeg;base64,AAAAA', photo(randomBytes(900, 3))]) {
+    await rejects(decodeContrib(await pack([ID, 'M', 'x', '', img])), { code: 'invalid' }, img.slice(0, 30));
+    await rejects(decodeBoard(await pack([ID, 'T', 'p', 1, [['M', 'x', '', img]]])), { code: 'invalid' }, img.slice(0, 30));
+  }
+  // in storage and backups a photo is a data URI, but only one the tail can carry
+  throws(() => validate('contrib', [ID, 'M', 'x', '', 'data:image/jpeg;base64,AAAAA']), { code: 'invalid' });
+  ok(validate('contrib', [ID, 'M', 'x', '', photo(randomBytes(900, 3))]));
+});
+
+test('35 keeping a card deleted elsewhere still remembers the other deletions', async () => {
+  const [ben, cleo] = await Promise.all(['Ben', 'Cleo'].map((name) => encodeContrib({ ...contrib, name })));
+  const here = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [] };
+  await mergeContribs(here, [ben]);
+  const there = structuredClone(here);
+  await mergeContribs(there, [cleo]);
+  const cleoOrigin = there.contribs[1].origin;
+  deletePost(there, here.contribs[0].origin);
+  deletePost(there, cleoOrigin);
+  deepEqual(mergeBoard(here, there, { deletions: false }), { added: 0, dupes: 0, foreign: 0, full: 0, removed: 0 });
+  deepEqual([here.contribs.map((e) => e.name), here.deleted], [['Ben'], [cleoOrigin]]);
+  deepEqual(await mergeContribs(here, [cleo]), { added: 0, dupes: 1, foreign: 0, broken: 0, full: 0 }); // the same chat pasted again
+});

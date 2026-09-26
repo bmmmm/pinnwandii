@@ -15,6 +15,7 @@ const DEFAULT_THEME = { title: 'Pinnwand', preset: 'p', hue: 210 };
 const KB = (n) => `${(n / 1024).toFixed(1).replace('.', ',')} KB`;
 const LINK_CAP = 32_000; // longest link offered: admin link, online view of the videos file
 const plural = (n) => (n === 1 ? '1 Beitrag' : `${n} Beiträge`);
+const newOnes = (n) => (n === 1 ? '1 neuer Beitrag' : `${n} neue Beiträge`);
 const SAVE_FAILED = 'Speichern nicht möglich: Speicher voll oder gesperrt. Lade eine Sicherung herunter.';
 const fullNote = (n) => (n ? ` ${n} nicht übernommen: Pinnwand voll (höchstens ${codec.LIMITS.contribs}).` : '');
 const removedNote = (n) => (n ? `, ${n} gelöscht` : '');
@@ -28,7 +29,7 @@ async function mergeBackup(local, other) {
   const names = gone.map((e) => e.name).join(', ');
   const deletions = !gone.length || await confirmDialog(gone.length === 1
     ? `Dort wurde 1 Beitrag gelöscht (${names}). Hier auch löschen?`
-    : `Dort wurden ${gone.length} Beiträge gelöscht (${names}). Hier auch löschen?`);
+    : `Dort wurden ${gone.length} Beiträge gelöscht (${names}). Hier auch löschen?`, { ok: 'Hier auch löschen', cancel: 'Hier behalten' });
   return codec.mergeBoard(local, other, { deletions });
 }
 // Signal (Android, Desktop) sends text over 2048 UTF-8 bytes as an attachment,
@@ -57,10 +58,12 @@ function toast(msg) {
   }, 3500);
 }
 
-function confirmDialog(text) {
+function confirmDialog(text, { ok = 'Löschen', cancel = 'Abbrechen' } = {}) {
   return new Promise((resolve) => {
     const d = $('#dlg-confirm');
     $('#confirm-text').textContent = text;
+    $('#confirm-ok').textContent = ok;
+    $('#confirm-cancel').textContent = cancel;
     d.addEventListener('close', () => resolve(d.returnValue === 'ok'), { once: true });
     d.returnValue = '';
     d.showModal();
@@ -298,11 +301,13 @@ async function route() {
 }
 
 function showError(e) {
+  current = null;
   applyTheme(DEFAULT_THEME);
   $('#error-text').textContent = e?.message || 'Unbekannter Fehler.';
   show('view-error');
 }
 $('#error-new').onclick = () => { location.hash = ''; };
+$('#receive-start').onclick = () => { location.hash = ''; };
 
 // ---- start ------------------------------------------------------------------
 
@@ -346,9 +351,11 @@ $('#restore').addEventListener('change', async (e) => {
     const b = codec.validate('board', JSON.parse(await file.text()));
     const local = store.load(b.id);
     if (local) {
+      const before = local.contribs.length;
       const r = await mergeBackup(local, b);
       if (!store.save(local)) return;
-      toast(`Sicherung zusammengeführt: ${r.added} neue Beiträge${removedNote(r.removed)}.${fullNote(r.full)}`);
+      highlightFrom = before - r.removed;
+      toast(`Sicherung zusammengeführt: ${newOnes(r.added)}${removedNote(r.removed)}.${fullNote(r.full)}`);
     } else {
       if (!store.save(b)) return;
       toast(`Pinnwand „${b.title}“ geladen (${plural(b.contribs.length)}).`);
@@ -402,6 +409,7 @@ async function renderBoard(board, newFrom = Infinity) {
 const adminLink = async (board) => `${BASE}#b=${await codec.encodeBoard(board)}`;
 
 function showReceive(c, hint) {
+  current = null;
   applyTheme(DEFAULT_THEME);
   $('#receive-card').replaceChildren(renderCard(c, 0));
   $('#receive-hint').textContent = hint;
@@ -410,7 +418,7 @@ function showReceive(c, hint) {
 function receive(c) {
   const board = store.load(c.id);
   if (!board) {
-    return showReceive(c, 'Diese Pinnwand liegt nicht auf diesem Gerät. Öffne zuerst deinen Admin-Link oder lade auf der Startseite deine Sicherung, dann tippe diesen Link noch einmal an.');
+    return showReceive(c, 'So kommt dein Glückwunsch an. Auf die Pinnwand kommt er, wenn die Person, die dich eingeladen hat, diesen Link bekommt. Du hast die Pinnwand angelegt? Dann öffne den Link in dem Browser, in dem sie gespeichert ist, oder lade auf der Startseite deine Sicherung.');
   }
   const before = board.contribs.length;
   const r = codec.addContrib(board, c);
@@ -432,7 +440,7 @@ async function adopt(b) {
     const r = await mergeBackup(local, b);
     if (!store.save(local)) return showError(new Error(SAVE_FAILED));
     highlightFrom = before - r.removed;
-    toast(`Pinnwand zusammengeführt: ${r.added} neue Beiträge${removedNote(r.removed)}.${fullNote(r.full)}`);
+    toast(`Pinnwand zusammengeführt: ${newOnes(r.added)}${removedNote(r.removed)}.${fullNote(r.full)}`);
   } else {
     if (!store.save(b)) return showError(new Error(SAVE_FAILED));
     toast(`Pinnwand „${b.title}“ übernommen (${plural(b.contribs.length)}).`);
@@ -624,7 +632,10 @@ cardForm.addEventListener('submit', async (e) => {
   let newFrom = Infinity;
   if (state.origin) {
     const i = cardIndex();
-    if (i < 0) return $('#dlg-card').close();
+    if (i < 0) { // deleted meanwhile, e.g. in another tab
+      toast('Dieser Beitrag wurde inzwischen gelöscht.');
+      return $('#dlg-card').close();
+    }
     Object.assign(current.contribs[i], next); // the origin stays: merging the original link again finds it
   } else {
     reloadCurrent();
@@ -953,6 +964,7 @@ async function updateWrite() {
     if (write.pending !== pending) return; // superseded by newer input
     write.link = link;
     renderPreview(fitted); // the photo as sent
+    if (dropped) $('#write-note').textContent = ''; // "Foto übernommen" no longer holds; the size line says why
     $('#write-link').value = write.link;
     const note = tooLong ? ' · zu lang für eine Signal-Nachricht: kürzen oder als Datei senden.'
       : dropped ? ' · ohne Foto: Mit diesem langen Gruß passt es nicht in eine Nachricht.' : '';
@@ -967,7 +979,7 @@ const shareTextFor = () => messageFor(currentContrib().name, write.link);
 // Waits for a photo still being shrunk and for the debounced recompute, so
 // the link always matches what the form shows right now.
 async function ensureLink() {
-  if (write.shrinking) await write.shrinking.catch(() => {});
+  while (write.shrinking) await write.shrinking.catch(() => {}); // also a photo picked while waiting
   if (write.timer) {
     clearTimeout(write.timer);
     write.timer = 0;
@@ -981,6 +993,7 @@ async function ensureLink() {
 function sent() {
   toast('Danke! Dein Gruß ist unterwegs.');
   writeForm.reset();
+  $('#write-note').textContent = '';
   write.photo = '';
   $$('#sticker-row button').forEach((x) => x.setAttribute('aria-pressed', 'false'));
   updateWrite();

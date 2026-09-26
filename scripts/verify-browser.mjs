@@ -253,11 +253,11 @@ try {
     await guest.$eval('#copy-link', (b) => b.click());
     await waitFor(guest, () => typeof window.__copied === 'string');
     const msg = await guest.evaluate(() => window.__copied);
-    return { msg, c: await decodeContrib(tokenOf(msg)), size: await text(guest, '#size') };
+    return { msg, c: await decodeContrib(tokenOf(msg)), size: await text(guest, '#size'), note: await text(guest, '#write-note') };
   };
   let mid, n = 500; // grow the text until no photo version fits any more
   do mid = await sendText(cjk.slice(0, (n += 10))); while (mid.c.img !== '' && n < 1000);
-  check('2 no room for the photo: sent without it, and the page says so', mid.c.img === '' && utf8(mid.msg) <= BUDGET && mid.size.includes('ohne Foto'), `${n} chars, ${utf8(mid.msg)} bytes; ${mid.size}`);
+  check('2 no room for the photo: sent without it, and the page says so (no "Foto übernommen" left)', mid.c.img === '' && utf8(mid.msg) <= BUDGET && mid.size.includes('ohne Foto') && mid.note === '', `${n} chars, ${utf8(mid.msg)} bytes; ${mid.size}; note "${mid.note}"`);
   const long = await sendText(cjk); // 3000 bytes that do not compress
   check('2 text alone too long for Signal: the page says so', long.c.img === '' && utf8(long.msg) > BUDGET && long.size.includes('zu lang für eine Signal-Nachricht'), long.size);
   await setValue(guest, '#write-form textarea[name=text]', 'Liebe Oma, alles Gute! 🎉\nWir feiern bald zusammen.');
@@ -294,6 +294,17 @@ try {
   const lastSent = await decodeContrib(tokenOf(await guest.$eval('#write-link', (e) => e.value)));
   check('3 photo picked last wins over a slower earlier one', lastSent.img === sent.img, `mean ${isPhoto(lastSent.img) ? (await inspect(guest, lastSent.img)).mean : 'no photo'}`);
 
+  // a photo picked while "Link kopieren" still waits for the one before it is the one sent
+  await photoInput.uploadFile(images.png);
+  await waitFor(guest, () => document.querySelector('#write-note').textContent.startsWith('Foto übernommen'), null, 20000);
+  await guest.evaluate(() => { window.__copied = null; });
+  await photoInput.uploadFile(images.slow);
+  await guest.$eval('#copy-link', (b) => b.click());
+  await photoInput.uploadFile(images.jpg);
+  await waitFor(guest, () => typeof window.__copied === 'string', null, 20000);
+  const waited = await decodeContrib(tokenOf(await guest.evaluate(() => window.__copied)));
+  check('3 a photo picked while "Link kopieren" waits is the one sent', waited.img === sent.img, isPhoto(waited.img) ? `mean ${(await inspect(guest, waited.img)).mean}` : 'no photo');
+
   // ---- P1-3: "Senden" right after typing must ship the current text ---------
   await guest.evaluate(() => { window.__copied = null; });
   await setValue(guest, '#write-form textarea[name=text]', 'Neuer Text, sofort gesendet.');
@@ -302,6 +313,12 @@ try {
   const copiedTok = tokenOf(await guest.evaluate(() => window.__copied));
   const decoded = copiedTok ? await decodeContrib(copiedTok).catch((e) => ({ text: 'ERR ' + e.message })) : { text: 'no token' };
   check('P1-3 copied link carries the just-typed text', decoded.text === 'Neuer Text, sofort gesendet.', decoded.text);
+  // sent: the form starts over, the photo note included
+  await guest.evaluate(() => { navigator.share = () => Promise.resolve(); });
+  await guest.$eval('#send', (b) => b.click());
+  await waitFor(guest, () => document.querySelector('#toast').textContent.startsWith('Danke'));
+  const afterSent = await guest.evaluate(() => [document.querySelector('#write-note').textContent, document.querySelector('#write-form textarea[name=text]').value].join('|'));
+  check('3 after sending: form and photo note are empty', afterSent === '|', afterSent);
 
   // ---- P1-1: a second tab saves the same board ---------------------------------
   const zedLink = `${ORIGIN}/#c=${await encodeContrib({ id: boardId, name: 'Zed', text: 'Aus dem zweiten Tab', sticker: '', img: '' })}`;
@@ -543,6 +560,14 @@ try {
   await fullPage.goto(`${ORIGIN}/#c=${extra}`, { waitUntil: 'networkidle0' });
   await sleep(200);
   const hintFull = await text(fullPage, '#receive-hint');
+  const lonely = await newPage(await browser.createBrowserContext(), 'lonely');
+  await lonely.goto(`${ORIGIN}/#c=${extra}`, { waitUntil: 'networkidle0' });
+  const lonelyHint = await text(lonely, '#receive-hint');
+  const lonelyStart = await visible(lonely, '#receive-start');
+  if (lonelyStart) await lonely.click('#receive-start');
+  await waitFor(lonely, () => !document.querySelector('#view-start').hidden, null, 2000).catch(() => {});
+  check('11 a greeting opened where its board is not: says how it arrives, leads to the start page', lonelyHint.startsWith('So kommt dein Glückwunsch an.') && lonelyStart && await visible(lonely, '#view-start'), lonelyHint.slice(0, 60));
+  await lonely.close();
   check('11 full board: receive view says so, board unchanged', await visible(fullPage, '#view-receive') && hintFull.includes('voll') && await fullPage.evaluate((id) => JSON.parse(localStorage.getItem(`pinnwandii:${id}`))[4].length === 500, fullBoard.id), hintFull);
   await fullPage.close();
 
@@ -715,9 +740,10 @@ try {
     return [q, await text(cp2, '#merge-result'), await cardCount(cp2)];
   };
   const [q1, keep, n1] = await pasteKiller('#confirm-cancel');
-  check('14 deletions from a file: asked by name, "Abbrechen" keeps the card', q1.includes('Dora') && n1 === 4 && !keep.includes('gelöscht'), `${q1} → ${keep}`);
+  const labels = await cp2.evaluate(() => [document.querySelector('#confirm-ok').textContent, document.querySelector('#confirm-cancel').textContent].join('|'));
+  check('14 deletions from a file: asked by name, "Hier behalten" keeps the card', q1.includes('Dora') && labels === 'Hier auch löschen|Hier behalten' && n1 === 4 && !keep.includes('gelöscht'), `${q1} [${labels}] → ${keep}`);
   const [, del, n2] = await pasteKiller('#confirm-ok');
-  check('14 deletions from a file: "Löschen" deletes and says so', n2 === 3 && del.includes('1 gelöscht'), del);
+  check('14 deletions from a file: "Hier auch löschen" deletes and says so', n2 === 3 && del.includes('1 gelöscht'), del);
   await cp2.close();
 
   // ---- 15. videos and GIFs: guests send links, the wall plays them on a click -------------

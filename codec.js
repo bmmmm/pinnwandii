@@ -177,8 +177,11 @@ function checkImg(img, wire) {
   }
   if (typeof img !== 'string') fail('invalid', 'Bild: falscher Typ.');
   if (URL_RE.test(img) && img.length <= LIMITS.url) return;
-  const m = DATA_RE.exec(img);
-  if (m && dataUriBytes(m[1]) <= LIMITS.photo) return;
+  // In a token a photo only travels as bytes in the tail: a data URI in the
+  // JSON is hand-made, and one the tail cannot carry would break every admin
+  // link built from the board.
+  const m = !wire && DATA_RE.exec(img);
+  if (m && m[1].length % 4 === 0 && dataUriBytes(m[1]) <= LIMITS.photo) return;
   fail('invalid', `Bild, Video oder GIF: ein https-Link mit höchstens ${LIMITS.url} Zeichen oder ein kleines Foto.`);
 }
 function checkEntry(t, wire = false) {
@@ -369,7 +372,8 @@ export const deletedIn = (board, other) =>
 
 /**
  * Merges another copy of the same board (admin link, backup) into `board`:
- * posts deleted there are deleted here too (unless `deletions` is false),
+ * posts deleted there are deleted here too (with `deletions` false the
+ * posts still here stay, and only the others are remembered as deleted),
  * posts known here stay as they are here (edits on this device win), new
  * posts are added.
  */
@@ -379,7 +383,8 @@ export function mergeBoard(board, other, { deletions = true } = {}) {
     r.foreign = other.contribs.length;
     return r;
   }
-  for (const origin of deletions ? other.deleted ?? [] : []) {
+  for (const origin of other.deleted ?? []) {
+    if (!deletions && board.contribs.some((e) => e.origin === origin)) continue; // kept here on request
     const before = board.contribs.length;
     deletePost(board, origin);
     r.removed += before - board.contribs.length;
