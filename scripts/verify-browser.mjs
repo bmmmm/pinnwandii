@@ -601,7 +601,7 @@ try {
   };
   check('14 four posts collected', (await pasteChat()) === '4 übernommen, 0 doppelt, 0 fremde Pinnwand, 0 defekt');
   const storedShape = () => cp.evaluate((id) => { const t = JSON.parse(localStorage.getItem(`pinnwandii:${id}`)); return [t.length, ...t[4].map((e) => e.length)].join(); }, cur.id);
-  check('14 uncurated board is stored in the pre-version-3 shape', (await storedShape()) === '5,4,4,4,4', await storedShape());
+  check('14 uncurated board is stored compactly (no origins, no deleted list)', (await storedShape()) === '5,4,4,4,4', await storedShape());
   const openCard = async (name) => {
     await cp.$eval(`#wall .card button.edit[title="Beitrag von ${name} bearbeiten"]`, (b) => b.click());
     await waitFor(cp, () => document.querySelector('#dlg-card').open);

@@ -238,7 +238,7 @@ export function toTuple(kind, o) {
   if (kind === 'contrib') return [o.id, o.name, o.text, o.sticker, o.img];
   if (kind === 'board') {
     // Origins that follow from the content and an empty deleted list are not
-    // written: smaller admin links and backups (about 13 characters a post).
+    // written: smaller admin links and backups (11–13 characters a post).
     const entries = o.contribs.map((c) => {
       const t = [c.name, c.text, c.sticker, c.img];
       return c.origin && c.origin !== originOf(c) ? [...t, c.origin] : t;

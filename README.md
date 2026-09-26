@@ -60,7 +60,7 @@ Deletions made on another device travel with its admin link or backup,
 after the app asks (with the names) whether to delete here too;
 where both devices edited the same card, the device you merge into keeps
 its version. A card's origin is only written where it does not follow from
-the card itself, which keeps admin links and backups about 13 characters a
+the card itself, which keeps admin links and backups 11–13 characters a
 card shorter.
 
 Videos and GIFs on the wall: a YouTube card shows the video's thumbnail
@@ -84,7 +84,7 @@ embedding shows YouTube's notice with a link to watch it there.
 Tokens are `3.<base64url>` of `u32 len | zlib(JSON) | photo bytes…`. A
 link cut off while copying is caught by the lengths and the zlib checksum
 and gives a clear message; the checksum covers the text only, so a changed
-character inside the photo bytes shows as a changed photo. Only version 3
+character inside the photo bytes mostly shows as a changed or broken photo. Only version 3
 is read (versions 1 and 2 never left testing). Hard limits (`codec.js`):
 title 80, name 60, text 1000, sticker 8 code points, image or video link
 500, photo 4 KB, 500 contributions, 2000 remembered deletions, token

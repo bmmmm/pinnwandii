@@ -62,7 +62,7 @@ test('3 a flipped bit in the token is rejected as broken', async () => {
   for (const k of [3, 4, 5]) {
     const b = bytes.slice();
     b[4 + Math.floor((zLen * k) / 8)] ^= 0x80;
-    await rejects(decodeContrib('1.' + toBase64url(b)), { code: 'broken' }, `flip ${k}/8`);
+    await rejects(decodeContrib('3.' + toBase64url(b)), { code: 'broken' }, `flip ${k}/8`);
   }
 });
 
@@ -191,6 +191,7 @@ function testImage() {
 test('14 version 1 and 2 tokens are refused', async () => {
   const tok = await encodeContrib({ ...contrib, img: photo(randomBytes(2000, 5)) });
   for (const v of ['1', '2']) await rejects(decodeContrib(v + '.' + tok.slice(2)), { code: 'broken' });
+  await rejects(decodeContrib('4.' + tok.slice(2)), { code: 'version' });
 });
 
 test('15 extractor: no candidates from ordinary text, back-to-back bare tokens, no #i=/#b=', async () => {
@@ -244,11 +245,12 @@ test('18 photo boards, exact limits, and no foreign SVG', async () => {
 });
 
 test('19 byte counts are wire-only: a backup with a numeric image is no backup', async () => {
-  for (const n of [5]) {
+  for (const n of [-5, 5]) {
     throws(() => validate('board', [ID, 'T', 'p', 1, [['M', 'hi', '', n]]]), { code: 'invalid' }, String(n));
     throws(() => validate('contrib', [ID, 'M', 'hi', '', n]), { code: 'invalid' }, String(n));
-    ok(validate('contrib', [ID, 'M', 'hi', '', n], { wire: true }));
   }
+  ok(validate('contrib', [ID, 'M', 'hi', '', 5], { wire: true }));
+  throws(() => validate('contrib', [ID, 'M', 'hi', '', -5], { wire: true }), { code: 'invalid' }); // sketches (version 2) are gone
   const target = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [] };
   deepEqual(await mergeText(target, JSON.stringify([ID, 'x', 'p', 1, [['M', 'hi', '', -5]]])), { added: 0, dupes: 0, foreign: 0, broken: 1, full: 0 });
   equal(target.contribs.length, 0);
@@ -325,7 +327,7 @@ test('23 ssim: 1 for identical images, lower the more they differ', () => {
   ok(sInv < sNoisy && sInv < 0.2, `inverted ${sInv}`);
 });
 
-test('24 boards from before version 3 get origins; origins and deletions survive a round trip', async () => {
+test('24 posts stored without an origin get it from their content; origins and deletions survive a round trip', async () => {
   const legacy = [ID, 'T', 'p', 1, [['Anna', 'Hallo', '', ''], ['Ben', 'Hi', '🎉', '']]];
   const b = validate('board', legacy);
   deepEqual(b.contribs.map((e) => e.origin), [originOf({ name: 'Anna', text: 'Hallo', sticker: '', img: '' }), originOf({ name: 'Ben', text: 'Hi', sticker: '🎉', img: '' })]);
@@ -348,7 +350,7 @@ test('24 boards from before version 3 get origins; origins and deletions survive
   const photoOrigin = withPhoto.contribs[0].origin;
   withPhoto.contribs[0].text = 'Foto, bearbeitet';
   equal((await decodeBoard(await encodeBoard(withPhoto))).contribs[0].origin, photoOrigin);
-  // a board object without a deleted list (created before version 3) still records deletions
+  // a board object without a deleted list still records deletions
   const lone = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [{ ...withPhoto.contribs[0] }] };
   deletePost(lone, photoOrigin);
   deepEqual([lone.contribs.length, lone.deleted], [0, [photoOrigin]]);
@@ -388,7 +390,7 @@ test('26 two copies of a board: deletions travel, local edits win, new posts arr
   equal(mergeBoard(a, { ...b, id: 'zzzzzz' }).foreign, 2);
 });
 
-test('27 an uncurated board is stored as before version 3; deletions from elsewhere only on request', async () => {
+test('27 an uncurated board is stored compactly; deletions from elsewhere only on request', async () => {
   const toks = await Promise.all(['Anna', 'Ben'].map((name) => encodeContrib({ ...contrib, name })));
   const b = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [] };
   await mergeContribs(b, toks);
