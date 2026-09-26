@@ -413,7 +413,7 @@ $('#restore').addEventListener('change', async (e) => {
 function showBoard(id) {
   const board = store.load(id);
   if (!board) {
-    return showError(new Error('Diese Pinnwand liegt nicht auf diesem Gerät. Öffne zuerst deinen Admin-Link oder lade auf der Startseite deine Sicherung.'));
+    return showError(new Error('Diese Pinnwand ist in diesem Browser nicht gespeichert. Öffne zuerst deinen Admin-Link oder lade auf der Startseite deine Sicherung.'));
   }
   current = board;
   applyTheme(board);
@@ -429,7 +429,7 @@ function showView(board) {
   renderBoard(board);
   show('view-board');
 }
-async function renderBoard(board, newFrom = Infinity) {
+function renderBoard(board, newFrom = Infinity) {
   const wall = renderWall(board);
   const cards = [...wall.children];
   if (board === current) {
@@ -441,12 +441,8 @@ async function renderBoard(board, newFrom = Infinity) {
   cards.slice(newFrom).forEach((c) => c.classList.add('new'));
   $('#wall').replaceChildren(...cards);
   $('#empty').hidden = board.contribs.length > 0 || board !== current;
-  const meta = $('#meta');
-  meta.textContent = plural(board.contribs.length);
+  $('#meta').textContent = plural(board.contribs.length);
   if (newFrom < Infinity) setTimeout(() => cards.forEach((c) => c.classList.remove('new')), 2000);
-  if (board !== current) return;
-  const link = await adminLink(board);
-  if (board === current) meta.textContent = `${plural(board.contribs.length)} · Admin-Link: ${KB(link.length)}`;
 }
 const adminLink = async (board) => `${BASE}#b=${await codec.encodeBoard(board)}`;
 
@@ -692,15 +688,16 @@ cardForm.addEventListener('submit', async (e) => {
   renderBoard(current, newFrom);
   $('#dlg-card').close();
 });
-function moveCard(step) {
+function moveCard(toEnd) {
   const i = cardIndex();
-  const j = i + step;
-  if (i < 0 || j < 0 || j >= current.contribs.length) return;
+  if (i < 0) return;
   const list = current.contribs;
-  [list[i], list[j]] = [list[j], list[i]];
+  const [c] = list.splice(i, 1);
+  if (toEnd) list.push(c);
+  else list.unshift(c);
   store.save(current);
   renderBoard(current);
-  updateMoveButtons(j);
+  updateMoveButtons(toEnd ? list.length - 1 : 0);
 }
 $('#dlg-card').addEventListener('close', () => {
   if ($('#dlg-card').open) return; // "close" comes as a task: the dialog may be open for the next card by then
@@ -708,8 +705,8 @@ $('#dlg-card').addEventListener('close', () => {
   card = null;
   stopPlayers($('#dlg-card'));
 });
-$('#card-earlier').onclick = () => moveCard(-1);
-$('#card-later').onclick = () => moveCard(1);
+$('#card-earlier').onclick = () => moveCard(false);
+$('#card-later').onclick = () => moveCard(true);
 $('#card-delete').onclick = async () => {
   if (card?.origin && await removeContrib(card.origin)) $('#dlg-card').close();
 };
@@ -911,14 +908,15 @@ $('#admin-link').onclick = async () => {
     $('#admin-note').textContent = `Der Admin-Link wäre ${KB(link.length)} groß, zu viel für einen Link. Nutze die Sicherung.`;
     return;
   }
-  openShare('Admin-Link', 'Öffne diesen Link auf dem anderen Gerät: Dort erscheint die Pinnwand mit allen Beiträgen.', link);
+  const long = utf8Length(link) > MESSAGE_BUDGET ? ' Für eine Signal-Nachricht ist er zu lang: per Mail schicken oder die Sicherung nehmen.' : '';
+  openShare('Admin-Link', `Öffne diesen Link auf dem anderen Gerät: Dort erscheint die Pinnwand mit allen Beiträgen.${long}`, link);
 };
 $('#backup').onclick = () => {
   const json = JSON.stringify(codec.toTuple('board', current));
-  download(new Blob([json], { type: 'application/json' }), `pinnwand-${current.id}.json`);
+  download(new Blob([json], { type: 'application/json' }), `${slug(current.title)}.json`);
 };
 $('#delete-board').onclick = async () => {
-  if (!(await confirmDialog(`Pinnwand „${current.title}“ von diesem Gerät löschen?`))) return;
+  if (!(await confirmDialog(`Pinnwand „${current.title}“ aus diesem Browser löschen?`))) return;
   store.remove(current.id);
   location.hash = '';
 };
@@ -1002,9 +1000,8 @@ async function updateWrite() {
     renderPreview(fitted); // the photo as sent
     if (dropped && !write.shrinking) $('#write-note').textContent = ''; // "Foto übernommen" no longer holds; the size line says why
     $('#write-link').value = write.link;
-    const note = tooLong ? ' · zu lang für eine Signal-Nachricht: kürzen oder als Datei senden.'
-      : dropped ? ' · ohne Foto: Mit diesem langen Gruß passt es nicht in eine Nachricht.' : '';
-    $('#size').textContent = `Link: ${KB(write.link.length)}${note}`;
+    $('#size').textContent = tooLong ? 'Zu lang für eine Signal-Nachricht: kürzen oder als Datei senden.'
+      : dropped ? 'Ohne Foto: Mit diesem langen Gruß passt es nicht in eine Nachricht.' : '';
   } catch (e) {
     if (write.pending !== pending) return;
     write.error = e.message;

@@ -272,9 +272,9 @@ try {
   };
   let mid, n = 500; // grow the text until no photo version fits any more
   do mid = await sendText(cjk.slice(0, (n += 10))); while (mid.c.img !== '' && n < 1000);
-  check('2 no room for the photo: sent without it, and the page says so (no "Foto übernommen" left)', mid.c.img === '' && utf8(mid.msg) <= BUDGET && mid.size.includes('ohne Foto') && mid.note === '', `${n} chars, ${utf8(mid.msg)} bytes; ${mid.size}; note "${mid.note}"`);
+  check('2 no room for the photo: sent without it, and the page says so (no "Foto übernommen" left)', mid.c.img === '' && utf8(mid.msg) <= BUDGET && mid.size.startsWith('Ohne Foto') && mid.note === '', `${n} chars, ${utf8(mid.msg)} bytes; ${mid.size}; note "${mid.note}"`);
   const long = await sendText(cjk); // 3000 bytes that do not compress
-  check('2 text alone too long for Signal: the page says so', long.c.img === '' && utf8(long.msg) > BUDGET && long.size.includes('zu lang für eine Signal-Nachricht'), long.size);
+  check('2 text alone too long for Signal: the page says so', long.c.img === '' && utf8(long.msg) > BUDGET && long.size.startsWith('Zu lang für eine Signal-Nachricht'), long.size);
   await setValue(guest, '#write-form textarea[name=text]', 'Liebe Oma, alles Gute! 🎉\nWir feiern bald zusammen.');
 
   // ---- 3. copy link -> organizer receives -------------------------------------
@@ -425,7 +425,7 @@ try {
   check('5 admin link on fresh device: 4 cards, organizer view', (await cardCount(dev2)) === 4 && await visible(dev2, '#toolbar') && await dev2.evaluate(() => document.body.dataset.preset === 'b'));
   await page.bringToFront();
   await page.click('#backup');
-  const backupPath = path.join(OUT, 'downloads', `pinnwand-${boardId}.json`);
+  const backupPath = path.join(OUT, 'downloads', `${slug(await text(page, '#title'))}.json`);
   for (let i = 0; i < 50 && !fs.existsSync(backupPath); i++) await sleep(100);
   check('5 backup downloaded', fs.existsSync(backupPath), backupPath);
   await page.click('#dlg-settings [data-close]');
@@ -552,9 +552,26 @@ try {
   const bigCtx = await browser.createBrowserContext();
   const bigPage = await newPage(bigCtx, 'big');
   await bigPage.goto(bigLink, { waitUntil: 'networkidle0' });
-  await waitFor(bigPage, () => location.hash.startsWith('#o=') && document.querySelector('#meta').textContent.includes('Admin-Link'));
+  await waitFor(bigPage, () => location.hash.startsWith('#o=') && document.querySelectorAll('#wall .card').length === 50);
   const meta = await text(bigPage, '#meta');
-  check('10 fifty cards + meta line', (await cardCount(bigPage)) === 50 && /^50 Beiträge · Admin-Link: \d+,\d KB$/.test(meta) && bigLink.length < 12000, `${meta}; link ${bigLink.length} chars`);
+  check('10 fifty cards + meta line (no link size)', (await cardCount(bigPage)) === 50 && meta === '50 Beiträge' && bigLink.length < 12000, `${meta}; link ${bigLink.length} chars`);
+  // the admin link says when it is too long for one Signal message
+  const adminHint = async () => {
+    await bigPage.click('#toolbar [data-act=settings]');
+    await waitFor(bigPage, () => document.querySelector('#dlg-settings').open);
+    await bigPage.click('#admin-link');
+    await waitFor(bigPage, () => document.querySelector('#dlg-share').open);
+    const hint = await text(bigPage, '#share-hint');
+    await bigPage.click('#dlg-share [data-close]');
+    await bigPage.click('#dlg-settings [data-close]');
+    return hint;
+  };
+  const longHint = await adminHint();
+  const smallId = newId();
+  await bigPage.evaluate((id) => { localStorage.setItem(`pinnwandii:${id}`, JSON.stringify([id, 'Klein', 'p', 1, [['Anna', 'Hallo', '', '']]])); location.hash = `#o=${id}`; }, smallId);
+  await waitFor(bigPage, () => document.querySelectorAll('#wall .card').length === 1);
+  const shortHint = await adminHint();
+  check('10 admin link: too long for Signal is said, a short one says nothing of it', longHint.includes('Für eine Signal-Nachricht ist er zu lang') && !shortHint.includes('Signal'), `${longHint.slice(-80)} | ${shortHint.slice(-40)}`);
   await shot(bigPage, '10-fifty');
   await bigPage.close();
 
@@ -743,8 +760,11 @@ try {
   await cp.$eval('#card-save', (b) => b.click());
   check('14 card dialog: the photo shows, a video link replaces it with a thumbnail', hadPhoto && videoPreview, `photo ${hadPhoto}, thumbnail ${videoPreview}`);
   await openCard('Dora');
-  await cp.$eval('#card-earlier', (b) => b.click());
-  await cp.$eval('#card-earlier', (b) => b.click()); // twice: Dora ends up before Ben
+  await cp.$eval('#card-earlier', (b) => b.click()); // "An den Anfang"
+  await cp.$eval('#dlg-card [data-close]', (b) => b.click());
+  await openCard('Anna');
+  await cp.$eval('#card-later', (b) => b.click()); // "Ans Ende"
+  const endDisabled = await cp.evaluate(() => [document.querySelector('#card-earlier').disabled, document.querySelector('#card-later').disabled].join());
   await cp.$eval('#dlg-card [data-close]', (b) => b.click());
   await openCard('Cleo');
   await cp.$eval('#card-delete', (b) => b.click());
@@ -770,10 +790,10 @@ try {
   await cp.$eval('#card-save', (b) => b.click());
   await waitFor(cp, () => !document.querySelector('#dlg-card').open);
   const wallState = () => cp.$$eval('#wall .card', (cs) => cs.map((c) => [c.querySelector('.name').textContent, c.querySelector('.text').textContent, c.querySelector('.sticker')?.textContent ?? '', c.querySelector('a.media.video') ? 'video' : c.querySelector('img') ? 'img' : '']));
-  const expected = JSON.stringify([['Anna M.', 'Gruß von Anna', '', ''], ['Dora', 'Gruß von Dora', '', ''], ['Ben', 'Gruß von Ben, korrigiert', '🎈', 'video'], ['Orga', 'Von uns allen', '', 'img']]);
+  const expected = JSON.stringify([['Dora', 'Gruß von Dora', '', ''], ['Ben', 'Gruß von Ben, korrigiert', '🎈', 'video'], ['Anna M.', 'Gruß von Anna', '', ''], ['Orga', 'Von uns allen', '', 'img']]);
   const afterEdit = JSON.stringify(await wallState());
   await shot(cp, '14-curated');
-  check('14 edit text + sticker, remove photo, add video, move, delete, own card, Enter saves', photoShown && cleared && afterEdit === expected, `${afterEdit}; photo shown ${photoShown}, removed + focus kept ${cleared}`);
+  check('14 edit text + sticker, remove photo, add video, to the start / to the end, delete, own card, Enter saves', photoShown && cleared && endDisabled === 'false,true' && afterEdit === expected, `${afterEdit}; photo shown ${photoShown}, removed + focus kept ${cleared}, at the end ${endDisabled}`);
   check('14 curated board is stored with origins and deletions', (await storedShape()).startsWith('6,'), await storedShape());
   const again = await pasteChat();
   const afterMerge = JSON.stringify(await wallState());
