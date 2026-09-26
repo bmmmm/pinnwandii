@@ -8,16 +8,16 @@
 // Wire format:  "<version>." + base64url( u32be(zlibLen) ++ zlib(json) ++ bins… )
 //   invite  = [id, title, preset, hue]
 //   contrib = [id, name, text, sticker, img]
-//   board   = [id, title, preset, hue, [[name, text, sticker, img, origin], …], [deleted origin, …]]
-//             (before version 3 without origins and deleted list)
-//   img     = "" | "https://…" | <number n: the next |n| bytes of the tail>
-//             n > 0: a JPEG photo, stored without its header (jpeg.js) when
-//             this app encoded it; n < 0: a sketch from version 2 (sketch.js)
-// In memory and in storage a photo is a full JPEG data URI and a sketch
-// "sketch:<base64>"; imgSrc() turns either into an <img> source.
+//   board   = [id, title, preset, hue, [[name, text, sticker, img, origin?], …], [deleted origin, …]?]
+//             (an origin that follows from the content and an empty deleted
+//             list are left out)
+//   img     = "" | "https://…" | <number n: the next n bytes of the tail>
+//             a JPEG photo, stored without its header (jpeg.js) when this app
+//             encoded it
+// In memory and in storage a photo is a full JPEG data URI.
 // toTuple()/validate() convert between tuples and plain objects.
-// Versions: 1 JPEG photos, 2 sketches, 3 JPEGs without header, origins. New
-// tokens are written as 3; older ones are still read.
+// Version 3 is the only one read: 1 (large JPEGs) and 2 (sketches) never
+// left the author's tests.
 //
 // Origin: every post on a board remembers a short hash of the contribution
 // it came from, and a board remembers the origins of deleted posts. Merging
@@ -26,18 +26,19 @@
 // comes from no link and gets a random origin instead: a hash would turn
 // the same text written again after a deletion into a duplicate.
 import { stripJpeg, unstripJpeg } from './jpeg.js';
-import { MAX_BYTES as SKETCH_BYTES, isSketch, sketchSvg } from './sketch.js';
 
-export const VERSION = '3';
-const READABLE = ['1', '2', '3'];
-export const PRESETS = ['p', 'b', 'd'];
+const VERSION = '3';
+const READABLE = ['3'];
+const PRESETS = ['p', 'b', 'd'];
+// photo: an own JPEG is at most ~2 KB (MAX_PHOTO in app.js plus its header);
+// token: the longest link the app offers is 32 000 characters.
 export const LIMITS = Object.freeze({
   title: 80, name: 60, text: 1000, sticker: 8, url: 500,
-  photo: 28 * 1024, sketch: SKETCH_BYTES, contribs: 500, deleted: 2000, token: 200_000,
-  json: 512 * 1024, tail: 4 * 1024 * 1024,
+  photo: 4 * 1024, contribs: 500, deleted: 2000, token: 40_000,
+  json: 512 * 1024,
 });
 
-export class CodecError extends Error {
+class CodecError extends Error {
   constructor(code, message) {
     super(message);
     this.name = 'CodecError';
@@ -45,7 +46,7 @@ export class CodecError extends Error {
   }
 }
 const fail = (code, message) => { throw new CodecError(code, message); };
-export const MESSAGES = Object.freeze({
+const MESSAGES = Object.freeze({
   version: 'Der Link stammt aus einer neueren Version. Bitte die Seite neu laden.',
   broken: 'Link beschädigt oder unvollständig, oft beim Kopieren abgeschnitten.',
   limit: 'Der Inhalt ist zu groß.',
@@ -144,7 +145,6 @@ export async function unpack(str) {
   const zLen = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0);
   if (4 + zLen > bytes.length) fail('broken', MESSAGES.broken);
   const tail = bytes.subarray(4 + zLen);
-  if (tail.length > LIMITS.tail) fail('limit', MESSAGES.limit);
   const json = await inflate(bytes.subarray(4, 4 + zLen), LIMITS.json);
   let obj;
   try {
@@ -161,8 +161,6 @@ const ID_RE = /^[A-Za-z0-9_-]{6}$/;
 const ORIGIN_RE = /^[A-Za-z0-9_-]{8}$/;
 const URL_RE = /^https:\/\/\S+$/;
 const DATA_RE = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/;
-const SKETCH = 'sketch:';
-const SKETCH_RE = /^sketch:([A-Za-z0-9+/]+={0,2})$/;
 const isStr = (v, max, min = 1) => typeof v === 'string' && v.length >= min && v.length <= max;
 const dataUriBytes = (b64) =>
   Math.floor((b64.length * 3) / 4) - (b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0);
@@ -175,14 +173,12 @@ function checkImg(img, wire) {
   if (typeof img === 'number') {
     if (!wire) fail('invalid', 'Bild: falscher Typ.');
     if (Number.isInteger(img) && img > 0 && img <= LIMITS.photo) return;
-    if (Number.isInteger(img) && img < 0 && -img <= LIMITS.sketch) return;
     fail('invalid', 'Foto zu groß.');
   }
   if (typeof img !== 'string') fail('invalid', 'Bild: falscher Typ.');
   if (URL_RE.test(img) && img.length <= LIMITS.url) return;
   const m = DATA_RE.exec(img);
   if (m && dataUriBytes(m[1]) <= LIMITS.photo) return;
-  if (sketchBytes(img)) return;
   fail('invalid', `Bild, Video oder GIF: ein https-Link mit höchstens ${LIMITS.url} Zeichen oder ein kleines Foto.`);
 }
 function checkEntry(t, wire = false) {
@@ -194,8 +190,8 @@ function checkEntry(t, wire = false) {
   checkImg(img, wire);
   return { name, text, sticker, img };
 }
-// A board entry: a contribution plus its origin (missing before version 3,
-// then the post is taken as unedited and the origin computed from it).
+// A board entry: a contribution plus its origin (left out when it follows
+// from the content, then computed from it).
 function checkPost(t, wire) {
   if (!Array.isArray(t) || (t.length !== 4 && t.length !== 5)) fail('invalid', 'Beitrag: falscher Typ.');
   const e = checkEntry(t.slice(0, 4), wire);
@@ -241,9 +237,8 @@ export function toTuple(kind, o) {
   if (kind === 'invite') return [o.id, o.title, o.preset, o.hue];
   if (kind === 'contrib') return [o.id, o.name, o.text, o.sticker, o.img];
   if (kind === 'board') {
-    // Unedited posts and an empty deleted list are written as before version
-    // 3 (origins follow from the content), so an uncurated board stays
-    // readable by an older copy of the app, e.g. a tab opened before an update.
+    // Origins that follow from the content and an empty deleted list are not
+    // written: smaller admin links and backups (about 13 characters a post).
     const entries = o.contribs.map((c) => {
       const t = [c.name, c.text, c.sticker, c.img];
       return c.origin && c.origin !== originOf(c) ? [...t, c.origin] : t;
@@ -257,7 +252,7 @@ export function newId() {
   return toBase64url(crypto.getRandomValues(new Uint8Array(6))).slice(0, 6);
 }
 /** A random origin (8 characters, like a hashed one) for a post the organizer writes. */
-export const newOrigin = () => toBase64url(crypto.getRandomValues(new Uint8Array(6)));
+const newOrigin = () => toBase64url(crypto.getRandomValues(new Uint8Array(6)));
 
 /** Origin of a contribution: 48-bit hash (cyrb53) of its content, 8 characters. */
 export function originOf(c) {
@@ -278,33 +273,15 @@ export function originOf(c) {
   return toBase64url(bytes);
 }
 
-// ---- photos: sketches and data URIs <-> binary tail --------------------------
-
-/** The bytes of a "sketch:" image, or null if `img` is no valid sketch. */
-export function sketchBytes(img) {
-  const m = SKETCH_RE.exec(img);
-  if (!m) return null;
-  let bytes;
-  try { bytes = fromBase64(m[1]); } catch { return null; }
-  return isSketch(bytes) ? bytes : null;
-}
-export const sketchImg = (bytes) => SKETCH + toBase64(bytes);
-
-/** Source for an <img>: sketches become SVG data URIs, other images already are URLs. */
-export function imgSrc(img) {
-  const bytes = sketchBytes(img);
-  return bytes ? 'data:image/svg+xml;base64,' + btoa(sketchSvg(bytes)) : img;
-}
+// ---- photos: data URIs <-> binary tail ------------------------------------
 
 function splitPhotos(entries) {
   const bins = [];
   const wired = entries.map(([name, text, sticker, img, ...rest]) => {
-    const sketch = img.startsWith(SKETCH);
-    if (!sketch && !img.startsWith('data:')) return [name, text, sticker, img, ...rest];
-    let bytes = fromBase64(img.slice(sketch ? SKETCH.length : img.indexOf(',') + 1));
-    if (!sketch) bytes = stripJpeg(bytes) ?? bytes;
-    bins.push(bytes);
-    return [name, text, sticker, sketch ? -bytes.length : bytes.length, ...rest];
+    if (!img.startsWith('data:')) return [name, text, sticker, img, ...rest];
+    const bytes = fromBase64(img.slice(img.indexOf(',') + 1));
+    bins.push(stripJpeg(bytes) ?? bytes);
+    return [name, text, sticker, bins.at(-1).length, ...rest];
   });
   return [wired, bins];
 }
@@ -312,10 +289,8 @@ function joinPhotos(entries, tail) {
   let off = 0;
   const out = entries.map(([name, text, sticker, img, ...rest]) => {
     if (typeof img !== 'number') return [name, text, sticker, img, ...rest];
-    const n = Math.abs(img);
-    let bytes = tail.subarray(off, off + n);
-    off += n;
-    if (img < 0) return [name, text, sticker, SKETCH + toBase64(bytes), ...rest];
+    let bytes = tail.subarray(off, off + img);
+    off += img;
     if (bytes[0] === 1) bytes = unstripJpeg(bytes) ?? fail('broken', MESSAGES.broken); // a JPEG starts with 0xFF
     return [name, text, sticker, 'data:image/jpeg;base64,' + toBase64(bytes), ...rest];
   });

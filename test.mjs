@@ -7,10 +7,9 @@ import { test } from 'node:test';
 import { deepEqual, equal, notEqual, ok, rejects, throws } from 'node:assert/strict';
 import {
   LIMITS, addContrib, addOwnPost, decodeBoard, decodeContrib, decodeInvite, encodeBoard,
-  encodeContrib, encodeInvite, extractContribs, fromBase64, fromBase64url, imgSrc,
-  deletePost, deletedIn, mergeBoard, mergeContribs, mergeText, originOf, pack, parseBackup, sketchImg, toBase64, toBase64url, toTuple, unpack, validate,
+  encodeContrib, encodeInvite, extractContribs, fromBase64, fromBase64url,
+  deletePost, deletedIn, mergeBoard, mergeContribs, mergeText, originOf, pack, parseBackup, toBase64, toBase64url, toTuple, unpack, validate,
 } from './codec.js';
-import { MAX_SHAPES, isSketch, sketchSvg } from './sketch.js';
 import { encodeJpeg, jpegHeader, ssim, strippedLength, stripJpeg, unstripJpeg } from './jpeg.js';
 import { FRAME_SRC, PLAYER_JS, hasPlayable, mediaOf, parseMediaLink, playInline, scriptHash, viewToken } from './media.js';
 
@@ -47,7 +46,7 @@ test('1 board round-trip keeps umlauts, emoji, newlines and RTL text', async () 
 });
 
 test('2 photo bytes survive the binary tail unchanged', async () => {
-  const bytes = randomBytes(24 * 1024);
+  const bytes = randomBytes(LIMITS.photo);
   const c = { ...contrib, img: photo(bytes) };
   const back = await decodeContrib(await encodeContrib(c));
   equal(back.img, c.img);
@@ -160,8 +159,8 @@ test('9 size budget: 50 text contributions and one photo contribution', async ()
   equal(big.contribs.length, 50);
   const tok = await encodeBoard(big);
   ok(tok.length <= 12_000, `board token is ${tok.length} chars`);
-  const withPhoto = await encodeContrib({ ...contrib, img: photo(randomBytes(24 * 1024, 9)) });
-  ok(withPhoto.length <= 34_000, `photo token is ${withPhoto.length} chars`);
+  const withPhoto = await encodeContrib({ ...contrib, img: photo(randomBytes(LIMITS.photo, 9)) });
+  ok(withPhoto.length <= 6_000, `photo token is ${withPhoto.length} chars`);
 });
 
 test('10 mergeText: chat export starting with "[" is not a backup, real backup is a union', async () => {
@@ -189,61 +188,9 @@ function testImage() {
   }
   return { rgba, w, h };
 }
-// A valid sketch (version 2 format) of n triangles on a 32 × 24 grid.
-function fakeSketch(n, seed = 3) {
-  const next = lcg(seed);
-  const out = [32, 24, 120, 130, 140];
-  for (let i = 0; i < n; i++) out.push(next() % 33, next() % 25, next() % 33, next() % 25, next() % 33, next() % 25, next() & 255, next() & 255, next() & 255);
-  return Uint8Array.from(out);
-}
-
-test('12 version 2 sketches still ride in the tail and render as SVG from numbers only', async () => {
-  const bytes = fakeSketch(120);
-  const c = { ...contrib, text: 'x'.repeat(280), img: sketchImg(bytes) };
-  const tok = await encodeContrib(c);
-  deepEqual(await decodeContrib(tok), c);
-  ok(tok.length <= 1800, `sketch token is ${tok.length} chars`);
-  const { obj, tail } = await unpack(tok);
-  equal(obj[4], -bytes.length);
-  deepEqual(tail, bytes);
-  const b = { ...board, contribs: [{ ...board.contribs[0], img: sketchImg(bytes) }, { ...board.contribs[1], img: photo(randomBytes(900)) }] };
-  deepEqual(await decodeBoard(await encodeBoard(b)), posts(b));
-  const src = imgSrc(c.img);
-  ok(src.startsWith('data:image/svg+xml;base64,'));
-  const svg = atob(src.slice(src.indexOf(',') + 1));
-  equal(svg, sketchSvg(bytes));
-  ok(/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^<]*>(<\/?(filter|feGaussianBlur|rect|g|path)( [a-zA-Z-]+="[#0-9a-zA-Z. ()]*")*\/?>)+<\/svg>$/.test(svg), svg.slice(0, 200));
-  equal(imgSrc('https://example.org/p.jpg'), 'https://example.org/p.jpg');
-});
-
-test('13 malformed sketches are rejected', () => {
-  const good = Uint8Array.from([10, 8, 1, 2, 3, 0, 0, 10, 0, 5, 8, 9, 9, 9]);
-  ok(isSketch(good));
-  const bad = [
-    ['x beyond w', [10, 8, 1, 2, 3, 11, 0, 10, 0, 5, 8, 9, 9, 9]],
-    ['y beyond h', [10, 8, 1, 2, 3, 0, 0, 10, 0, 5, 9, 9, 9, 9]],
-    ['zero width', [0, 8, 1, 2, 3]],
-    ['partial shape', [10, 8, 1, 2, 3, 0, 0, 10]],
-    ['too many shapes', [10, 8, 1, 2, 3, ...new Array(9 * (MAX_SHAPES + 1)).fill(0)]],
-  ];
-  for (const [label, arr] of bad) {
-    equal(isSketch(Uint8Array.from(arr)), false, label);
-    throws(() => sketchSvg(Uint8Array.from(arr)), label);
-    throws(() => validate('contrib', [ID, 'A', 'B', '', sketchImg(Uint8Array.from(arr))]), { code: 'invalid' }, label);
-  }
-  deepEqual(validate('contrib', [ID, 'A', 'B', '', sketchImg(good)]).img, sketchImg(good));
-  throws(() => validate('contrib', [ID, 'A', 'B', '', 'sketch:A']), { code: 'invalid' });
-  throws(() => validate('contrib', [ID, 'A', 'B', '', -(LIMITS.sketch + 1)]), { code: 'invalid' });
-});
-
-test('14 version 1 and 2 tokens are still read', async () => {
-  const c = { ...contrib, img: photo(randomBytes(2000, 5)) };
-  const tok = await encodeContrib(c);
-  deepEqual(await decodeContrib('1.' + tok.slice(2)), c);
-  const sk = { ...contrib, img: sketchImg(fakeSketch(4)) };
-  deepEqual(await decodeContrib('2.' + (await encodeContrib(sk)).slice(2)), sk);
-  await rejects(decodeContrib('4.' + tok.slice(2)), { code: 'version' });
-  deepEqual(extractContribs(`https://x.test/#c=1.${tok.slice(2)}`), ['1.' + tok.slice(2)]);
+test('14 version 1 and 2 tokens are refused', async () => {
+  const tok = await encodeContrib({ ...contrib, img: photo(randomBytes(2000, 5)) });
+  for (const v of ['1', '2']) await rejects(decodeContrib(v + '.' + tok.slice(2)), { code: 'broken' });
 });
 
 test('15 extractor: no candidates from ordinary text, back-to-back bare tokens, no #i=/#b=', async () => {
@@ -281,12 +228,10 @@ test('17 a full board counts the rest instead of throwing', async () => {
 });
 
 test('18 photo boards, exact limits, and no foreign SVG', async () => {
-  const sk = sketchImg(fakeSketch(5));
   const b = { ...board, contribs: [
     { name: 'A', text: 'a', sticker: '', img: photo(randomBytes(3000, 1)) },
     { name: 'B', text: 'b', sticker: '', img: '' },
-    { name: 'C', text: 'c', sticker: '', img: sk },
-    { name: 'D', text: 'd', sticker: '', img: photo(randomBytes(5000, 2)) },
+    { name: 'D', text: 'd', sticker: '', img: photo(randomBytes(3500, 2)) },
     { name: 'E', text: 'e', sticker: '', img: 'https://example.org/e.jpg' },
   ] };
   deepEqual(await decodeBoard(await encodeBoard(b)), posts(b));
@@ -299,7 +244,7 @@ test('18 photo boards, exact limits, and no foreign SVG', async () => {
 });
 
 test('19 byte counts are wire-only: a backup with a numeric image is no backup', async () => {
-  for (const n of [-5, 5]) {
+  for (const n of [5]) {
     throws(() => validate('board', [ID, 'T', 'p', 1, [['M', 'hi', '', n]]]), { code: 'invalid' }, String(n));
     throws(() => validate('contrib', [ID, 'M', 'hi', '', n]), { code: 'invalid' }, String(n));
     ok(validate('contrib', [ID, 'M', 'hi', '', n], { wire: true }));
@@ -540,7 +485,7 @@ test('29 players and thumbnails come from the id alone; raw links typed before s
   for (const src of ['https://example.org/a.jpg', 'https://youtube.com.evil.com/watch?v=M7lc1UVf-VE', 'https://www.youtube.com/@kanal']) {
     deepEqual(mediaOf(src), { kind: 'image', src }, src);
   }
-  for (const img of ['', 'data:image/jpeg;base64,AAAA', sketchImg(fakeSketch(3)), 5]) equal(mediaOf(img), null, String(img));
+  for (const img of ['', 'data:image/jpeg;base64,AAAA', 5]) equal(mediaOf(img), null, String(img));
 });
 
 test('30 media links travel through tokens and boards unchanged, origins included', async () => {

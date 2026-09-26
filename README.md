@@ -59,8 +59,9 @@ origin, so the same card written again after a deletion is new.
 Deletions made on another device travel with its admin link or backup,
 after the app asks (with the names) whether to delete here too;
 where both devices edited the same card, the device you merge into keeps
-its version. A board nobody curated is stored exactly as before version 3,
-so a tab still running an older copy of the app can read it.
+its version. A card's origin is only written where it does not follow from
+the card itself, which keeps admin links and backups about 13 characters a
+card shorter.
 
 Videos and GIFs on the wall: a YouTube card shows the video's thumbnail
 (loaded from YouTube at once) and plays in place on a click, through
@@ -80,13 +81,14 @@ embedding shows YouTube's notice with a link to watch it there.
 | Finished page | file | download, share, print |
 | Videos file | file, plus an *Online ansehen* link `#v=`: the whole board up to 32 000 chars, else all cards without photos, else only the cards with players, else none (each card then links to YouTube or Tenor) | download, share; the link opens in the browser |
 
-Tokens are `3.<base64url>` of `u32 len | zlib(JSON) | photo bytes…`. The
-zlib checksum turns a copy error into a clear message instead of a garbled
-card. Older tokens are still read: version 1 carried JPEGs of up to 24 KB,
-version 2 photo sketches (translucent triangles, `sketch.js`); boards from
-before version 3 get their card origins on loading. Hard limits
-(`codec.js`): title 80, name 60, text 1000, sticker 8 code points, photo
-28 KB, 500 contributions, 2000 remembered deletions, token 200 000 chars.
+Tokens are `3.<base64url>` of `u32 len | zlib(JSON) | photo bytes…`. A
+link cut off while copying is caught by the lengths and the zlib checksum
+and gives a clear message; the checksum covers the text only, so a changed
+character inside the photo bytes shows as a changed photo. Only version 3
+is read (versions 1 and 2 never left testing). Hard limits (`codec.js`):
+title 80, name 60, text 1000, sticker 8 code points, image or video link
+500, photo 4 KB, 500 contributions, 2000 remembered deletions, token
+40 000 chars.
 
 ## Scale path
 
@@ -105,7 +107,6 @@ before version 3 get their card origins on loading. Hard limits
 | `style.css` | Themes (`p` pastel, `b` bold, `d` dark), wall, cards, print |
 | `codec.js` | Token codec, schema validation, merge helpers; pure ESM |
 | `jpeg.js` | JPEG encoder with fixed tables, header stripping, SSIM; pure ESM |
-| `sketch.js` | Reads the photo sketches of version 2 links; pure ESM |
 | `media.js` | YouTube, Tenor and Giphy links: canonical form, thumbnails, players; pure ESM |
 | `app.js` | Router, views, storage, photo pipeline, static page builder |
 | `test.mjs` | `node --test` suite for codec and photos |

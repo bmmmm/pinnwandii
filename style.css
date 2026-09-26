@@ -58,9 +58,9 @@ p { margin: 0 0 0.75rem; }
   box-shadow: 0 2px 8px #0003;
   rotate: calc(var(--r) * 1deg);
   transition: box-shadow 0.8s;
+  position: relative;
 }
 .card.new { box-shadow: 0 0 0 4px var(--accent), 0 2px 8px #0003; }
-.card { position: relative; }
 .card .edit { position: absolute; z-index: 1; top: 0.4rem; right: 0.4rem; padding: 0.15rem 0.5rem; font-size: 1rem; line-height: 1.4; opacity: 0.85; }
 .card .edit:hover, .card .edit:focus-visible { opacity: 1; }
 #card-media > img, #card-media > .media { display: block; max-width: 12rem; border-radius: 0.5rem; margin: 0.5rem 0 0.25rem; }

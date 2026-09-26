@@ -89,7 +89,7 @@ export function parseMediaLink(input) {
 /**
  * What a card shows for a stored image: { kind: 'youtube', id, start, href,
  * thumb, embed } | { kind: 'tenor', id, href, embed } | { kind: 'image', src }
- * for any other https URL; null for photos and sketches (codec.imgSrc).
+ * for any other https URL; null for photos (data URIs).
  */
 export function mediaOf(img) {
   if (typeof img !== 'string' || !img.startsWith('https://')) return null;
@@ -161,7 +161,7 @@ export const hasPlayable = (board) => board.contribs.some(playable);
  */
 export async function viewToken(board, cap) {
   if (!hasPlayable(board)) return null;
-  const photo = (img) => img.startsWith('data:') || img.startsWith('sketch:');
+  const photo = (img) => img.startsWith('data:');
   const rungs = [
     ['all', board.contribs],
     ['text', board.contribs.map((c) => (photo(c.img) ? { ...c, img: '' } : c))],

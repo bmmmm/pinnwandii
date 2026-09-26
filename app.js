@@ -3,7 +3,7 @@
 // sharing, merge dialog and the static page builder. All user content is
 // rendered through textContent / createElement, never through innerHTML.
 import * as codec from './codec.js';
-import { MAX_SIDE, encodeJpeg, ssim, strippedLength } from './jpeg.js';
+import { encodeJpeg, ssim, strippedLength } from './jpeg.js';
 import { FRAME_SRC, PLAYER_JS, hasPlayable, mediaOf, parseMediaLink, playInline, scriptHash, viewToken } from './media.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -85,7 +85,6 @@ const store = {
   save(board) {
     try {
       localStorage.setItem(this.key(board.id), JSON.stringify(codec.toTuple('board', board)));
-      localStorage.setItem('pinnwandii:last', board.id);
       return true;
     } catch {
       toast(SAVE_FAILED);
@@ -100,7 +99,7 @@ const store = {
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (!k.startsWith('pinnwandii:') || k === 'pinnwandii:last') continue;
+        if (!k.startsWith('pinnwandii:') || k === 'pinnwandii:last') continue; // a key older copies wrote
         const b = this.load(k.slice('pinnwandii:'.length));
         if (b) out.push(b);
       }
@@ -170,7 +169,7 @@ function bindThemeInputs(form, onInput) {
 
 const rotOf = (i) => (((i * 7) % 5) - 2) * 0.7;
 
-// A card's picture: photos, sketches and image links as <img>; a YouTube
+// A card's picture: photos and image links as <img>; a YouTube
 // video or a Tenor GIF as a link to it, which playInline() (media.js) turns
 // into the player. Tenor's player loads trackers, so it waits for the click.
 function renderMedia(img, doc, name = '') {
@@ -184,7 +183,7 @@ function renderMedia(img, doc, name = '') {
     return e;
   };
   if (m?.kind === 'image') return pic(m.src);
-  if (!m) return img && codec.imgSrc(img).startsWith('data:') ? pic(codec.imgSrc(img)) : null; // null: a link still being typed
+  if (!m) return img?.startsWith('data:') ? pic(img) : null; // null: a link still being typed
   const a = doc.createElement('a');
   a.className = m.kind === 'youtube' ? 'media video' : 'media gif-tenor';
   a.href = m.href;
@@ -1080,19 +1079,21 @@ async function photoLadder(file, signal) {
   }
   const cands = [];
   try {
-    const [rw, rh] = fit(bmp.width, bmp.height, Math.min(REF, MAX_SIDE));
+    const [rw, rh] = fit(bmp.width, bmp.height, REF);
     const ref = drawn(bmp, rw, rh);
     let last = 0;
-    for (const side of SIDES) {
+    sides: for (const side of SIDES) {
       const [w, h] = fit(bmp.width, bmp.height, side);
       if (w * 1000 + h === last) break; // the photo is smaller than this side
       last = w * 1000 + h;
       const px = drawn(bmp, w, h);
-      if (strippedLength(encodeJpeg(px, w, h, QUALITIES[0])) > MAX_PHOTO) break; // larger sides only grow
       for (const q of QUALITIES) {
         const jpeg = encodeJpeg(px, w, h, q);
         const size = strippedLength(jpeg);
-        if (size > MAX_PHOTO) break; // higher qualities only grow
+        if (size > MAX_PHOTO) {
+          if (q === QUALITIES[0]) break sides; // larger sides only grow
+          break; // higher qualities only grow
+        }
         const decoded = await createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' }));
         const score = ssim(ref, drawn(decoded, rw, rh), rw, rh);
         decoded.close();
