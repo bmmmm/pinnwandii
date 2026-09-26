@@ -6,7 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- style-src allows inline styles because the "Vorschau" opens the built page as a blob: URL, and
      blob: documents inherit this policy; the built page relies on its own <style> and style attributes.
-     Inline scripts stay blocked there, so the preview is always the print version without players.
+     Inline scripts stay blocked there, so the preview is the finished page without players.
      frame-src: the YouTube and Tenor players (media.js), inserted only on a click. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src https: data:; frame-src https://www.youtube-nocookie.com https://tenor.com; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Pinnwand</title>
@@ -120,15 +120,15 @@
 
 <dialog id="dlg-build">
   <h2>Fertige Seite</h2>
-  <p>Eine HTML-Datei mit allen Fotos, zum Verschicken, Drucken oder als PDF (Vorschau öffnen und drucken). Videos zeigen gedruckt ein Standbild; in der Datei öffnet ein Tipp YouTube, online spielen sie direkt.</p>
+  <p>Eine HTML-Datei mit allen Fotos, zum Verschicken, Drucken oder als PDF (Vorschau öffnen und drucken).</p>
   <div class="row">
     <button type="button" class="primary" id="build-preview">Vorschau</button>
     <button type="button" id="build-download">Herunterladen</button>
     <button type="button" id="build-share">Teilen</button>
   </div>
   <div id="build-videos" hidden>
-    <h3>Online ansehen</h3>
-    <p>Ein Link, der die Pinnwand hier in der App öffnet, wo auch die Videos direkt spielen. Bei vielen Fotos zeigt er die Beiträge ohne Fotos oder nur die Videos.</p>
+    <h3>Videos</h3>
+    <p>Gedruckt zeigt jedes Video ein Standbild; in der Datei öffnet ein Tipp YouTube, online spielen sie direkt. „Online ansehen“ ist ein Link, der die Pinnwand hier in der App öffnet, wo auch die Videos direkt spielen. Bei vielen Fotos zeigt er die Beiträge ohne Fotos oder nur die Videos.</p>
     <div class="row"><button type="button" id="build-online">Online ansehen</button></div>
   </div>
   <div class="row"><button type="button" data-close>Schließen</button></div>

@@ -102,7 +102,7 @@ const pixelAt = async (page, x, y) => {
   }
   return [...zlib.inflateSync(Buffer.concat(idat)).subarray(1, 4)];
 };
-const slug = (s) => s.normalize('NFKD').replace(/\p{M}+/gu, '').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'gruss'; // as app.js names files
+const slug = (s, fallback = 'pinnwand') => s.replace(/[ßẞ]/g, 'ss').normalize('NFKD').replace(/\p{M}+/gu, '').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || fallback; // as app.js names files
 const cardCount = (page) => page.$$eval('#wall .card', (c) => c.length);
 const waitFor = (page, fn, arg, ms = 5000) => page.waitForFunction(fn, { timeout: ms }, arg);
 const tokenOf = (link) => link.match(/#c=(\S+)/)?.[1];
@@ -240,6 +240,7 @@ try {
   check('2 link carries the photo, version 3, no query string', isPhoto(sent.img) && guestLink.includes('/#c=3.') && !guestLink.includes('?'), `${sentLook.w}×${sentLook.h} px, ${photoBytes(sent.img)} B as JPEG, ${photoMs} ms`);
   check('2 photo in the link looks like the original (SSIM, colours)', sentLook.ssim > 0.7 && sentLook.mean.every((v, k) => Math.abs(v - sentLook.refMean[k]) < 12), `ssim ${sentLook.ssim?.toFixed(3)}, mean ${sentLook.mean} vs ${sentLook.refMean}`);
   check(`2 whole message ≤ ${BUDGET} bytes (one Signal message)`, utf8(guestMsg) <= BUDGET, `${utf8(guestMsg)} bytes, size line "${await text(guest, '#size')}"`);
+  check('2 the size line stays empty while the greeting fits', (await text(guest, '#size')) === '', await text(guest, '#size'));
   await shot(guest, '02-write');
   await bcdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: path.join(OUT, 'guest-downloads'), browserContextId: guestCtx.id, eventsEnabled: true });
   await guest.evaluate(() => { navigator.canShare = () => false; }); // take the download path
@@ -252,7 +253,7 @@ try {
   await guest.evaluate(() => { window.__copied = null; navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve(); }; });
   const longText = 'Liebe Oma, wir denken an dich und wünschen dir alles Gute! '.repeat(17).slice(0, 1000);
   await setValue(guest, '#write-form textarea[name=text]', longText);
-  await guest.$eval('#copy-link', (b) => b.click()); // DOM click: the #size line above the buttons empties and refills while encoding
+  await guest.$eval('#copy-link', (b) => b.click()); // DOM click: the page may reflow while the link is encoded
   await waitFor(guest, () => typeof window.__copied === 'string');
   const longMsg = await guest.evaluate(() => window.__copied);
   const longSent = await decodeContrib(tokenOf(longMsg));
@@ -280,7 +281,7 @@ try {
   // ---- 3. copy link -> organizer receives -------------------------------------
   await guest.bringToFront();
   await guest.evaluate(() => { window.__copied = null; });
-  await guest.$eval('#copy-link', (b) => b.click()); // DOM click: the #size line above the buttons empties and refills while encoding
+  await guest.$eval('#copy-link', (b) => b.click()); // DOM click: the page may reflow while the link is encoded
   await waitFor(guest, () => typeof window.__copied === 'string');
   check('3 copy link: toast confirms clipboard write', (await text(guest, '#toast')) === 'Kopiert.', await text(guest, '#toast'));
   const copiedLink = (await guest.evaluate(() => window.__copied)).match(/https?:\/\/\S+#c=\S+/)[0];
@@ -323,7 +324,7 @@ try {
   // ---- P1-3: "Senden" right after typing must ship the current text ---------
   await guest.evaluate(() => { window.__copied = null; });
   await setValue(guest, '#write-form textarea[name=text]', 'Neuer Text, sofort gesendet.');
-  await guest.$eval('#copy-link', (b) => b.click()); // DOM click: the #size line above the buttons empties and refills while encoding // no wait: the 300 ms debounce is still pending
+  await guest.$eval('#copy-link', (b) => b.click()); // DOM click: the page may reflow while the link is encoded // no wait: the 300 ms debounce is still pending
   await waitFor(guest, () => typeof window.__copied === 'string');
   const copiedTok = tokenOf(await guest.evaluate(() => window.__copied));
   const decoded = copiedTok ? await decodeContrib(copiedTok).catch((e) => ({ text: 'ERR ' + e.message })) : { text: 'no token' };
@@ -440,7 +441,7 @@ try {
   // ---- 6. finished page: preview tab and download ------------------------------------
   await page.click('#toolbar [data-act=build]');
   await waitFor(page, () => document.querySelector('#dlg-build').open);
-  check('6 a board without videos: no videos file offered', await page.$eval('#build-videos', (e) => e.hidden));
+  check('6 a board without videos: no video section in the dialog', await page.$eval('#build-videos', (e) => e.hidden));
   const popupPromise = new Promise((r) => browser.once('targetcreated', (t) => r(t)));
   await page.click('#build-preview');
   const preview = await (await popupPromise).page();
@@ -761,6 +762,8 @@ try {
   check('14 card dialog: the photo shows, a video link replaces it with a thumbnail', hadPhoto && videoPreview, `photo ${hadPhoto}, thumbnail ${videoPreview}`);
   await openCard('Dora');
   await cp.$eval('#card-earlier', (b) => b.click()); // "An den Anfang"
+  const focusAfterMove = await cp.evaluate(() => document.activeElement?.id);
+  check('14 after "An den Anfang" (now disabled) the focus stays in the dialog', focusAfterMove === 'card-later', focusAfterMove);
   await cp.$eval('#dlg-card [data-close]', (b) => b.click());
   await openCard('Anna');
   await cp.$eval('#card-later', (b) => b.click()); // "Ans Ende"
@@ -891,6 +894,7 @@ try {
     ['Olaf', 'media video', 'https://www.youtube-nocookie.com/embed/M7lc1UVf-VE?autoplay=1', 'https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg', '▶ Video ansehen'],
   ];
   check('15 wall: thumbnail links for videos (old raw link too), Giphy drawn, Tenor placeholder', JSON.stringify(wallMedia) === JSON.stringify(wantMedia), JSON.stringify(wallMedia));
+  check('15 the Tenor placeholder is one label, centred as one', await mp.$eval('#wall a.gif-tenor', (a) => a.childNodes.length === 1 && a.firstChild.tagName === 'SPAN'));
   // the organizer's card dialog shows them the same way
   const dialogPreview = async (n) => {
     await mp.$eval(`#wall .card:nth-child(${n}) button.edit`, (b) => b.click());
@@ -932,6 +936,12 @@ try {
   await mp.click('#toolbar [data-act=build]');
   await waitFor(mp, () => document.querySelector('#dlg-build').open);
   check('15 a board with videos: "Online ansehen" is offered', await visible(mp, '#build-videos'));
+  // the preview's blob: page runs no inline script (the app's CSP): it is built without one
+  await mp.evaluate(() => { const create = URL.createObjectURL; URL.createObjectURL = (f) => { window.__built = f; return create.call(URL, f); }; window.open = () => ({}); });
+  await mp.click('#build-preview');
+  await waitFor(mp, () => !!window.__built);
+  const pvHtml = await mp.evaluate(() => window.__built.text());
+  check('15 preview of a board with videos: no script', !/<script/i.test(pvHtml) && pvHtml.includes('class="media video"'), `${pvHtml.length} chars`);
   await mp.click('#build-download');
   const medHtml = path.join(OUT, 'downloads', `${slug(med.title)}.html`);
   for (let i = 0; i < 50 && !fs.existsSync(medHtml); i++) await sleep(100);
@@ -951,13 +961,17 @@ try {
   await sleep(300);
   const fromDisk = await vf.evaluate(() => [document.querySelectorAll('iframe.media.video').length, document.querySelector('iframe.media.gif-tenor')?.src ?? '', document.querySelectorAll('.card').length].join());
   check('15 finished page from disk: a tap on a video starts no player, a Tenor GIF plays', fromDisk === `0,${TENOR_EMBED},4`, fromDisk);
-  const flip = await vf.evaluate(() => [...document.querySelectorAll('a.media.video')][0].querySelectorAll('.frame').length + ',' + [...[...document.querySelectorAll('a.media.video')][0].querySelectorAll('.frame')].map((e) => `${getComputedStyle(e).animationName}/${getComputedStyle(e).animationDelay}`).join());
+  const flip = await vf.evaluate(() => {
+    const frames = [...document.querySelector('a.media.video').querySelectorAll('.frame')];
+    const keys = frames[0].getAnimations()[0]?.effect.getKeyframes().map((k) => `${k.offset}:${k.opacity}`).join(' ') ?? '';
+    return `${frames.length},${frames.map((e) => `${getComputedStyle(e).animationName}/${getComputedStyle(e).animationDuration}/${getComputedStyle(e).animationDelay}`).join()},${keys.startsWith('0:1 0.25:0')}`;
+  });
   await vf.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
   const still = await vf.evaluate(() => getComputedStyle(document.querySelector('a.media.video .frame')).display);
   await vf.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
   await vf.emulateMediaType('print');
   const printedPage = await vf.evaluate(() => { const a = document.querySelector('a.media.video'); return [getComputedStyle(a.querySelector('img:not(.frame)')).display, getComputedStyle(a.querySelector('.frame')).display, getComputedStyle(a.querySelector('.play')).display, getComputedStyle(document.querySelector('a.gif-tenor .load')).display].join(); });
-  check('15 finished page: three stills flip on screen, stand still with reduced motion, printed only the thumbnail', flip === '3,flip/0s,flip/-2s,flip/-1s' && still === 'none' && printedPage === 'block,none,none,none', `${flip}; reduced motion ${still}; printed ${printedPage}`);
+  check('15 finished page: the thumbnail and three stills flip a second each on screen, stand still with reduced motion, printed only the thumbnail', flip === '3,flip/4s/-3s,flip/4s/-2s,flip/4s/-1s,true' && still === 'none' && printedPage === 'block,none,none,none', `${flip}; reduced motion ${still}; printed ${printedPage}`);
   await shot(vf, '15-page-file');
   await vf.close();
   served.set(`${ORIGIN}/boards/t.html`, mh);

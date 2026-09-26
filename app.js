@@ -183,7 +183,7 @@ function download(blob, name) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
 }
-const slug = (s) => s.normalize('NFKD').replace(/\p{M}+/gu, '').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'gruss';
+const slug = (s, fallback = 'pinnwand') => s.replace(/[ßẞ]/g, 'ss').normalize('NFKD').replace(/\p{M}+/gu, '').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || fallback;
 
 // ---- theme and cards --------------------------------------------------------
 
@@ -241,10 +241,12 @@ function renderMedia(img, doc, name = '') {
     const frames = m.frames.map((src) => Object.assign(pic(src), { className: 'frame' }));
     a.append(pic(m.thumb, doc === document ? 'lazy' : 'eager'), ...frames, play); // a built page may be printed unscrolled
   } else {
+    const label = doc.createElement('span'); // one grid item: the link centres it
     const load = doc.createElement('span');
     load.className = 'load'; // not printed
     load.textContent = ' laden (lädt Inhalte von Tenor/Google)';
-    a.append('GIF von Tenor', load);
+    label.append('GIF von Tenor', load);
+    a.append(label);
   }
   return a;
 }
@@ -698,6 +700,8 @@ function moveCard(toEnd) {
   store.save(current);
   renderBoard(current);
   updateMoveButtons(toEnd ? list.length - 1 : 0);
+  const other = $(toEnd ? '#card-earlier' : '#card-later'); // the pressed button is disabled now: keep the focus in the dialog
+  (other.disabled ? $('#card-save') : other).focus();
 }
 $('#dlg-card').addEventListener('close', () => {
   if ($('#dlg-card').open) return; // "close" comes as a task: the dialog may be open for the next card by then
@@ -1079,7 +1083,7 @@ $('#copy-link').onclick = async () => {
 };
 $('#send-file').onclick = async () => {
   if (!(await ensureLink())) return;
-  const file = new File([shareTextFor()], `gruss-${slug(currentContrib().name)}.txt`, { type: 'text/plain' });
+  const file = new File([shareTextFor()], `gruss-${slug(currentContrib().name, 'gruss')}.txt`, { type: 'text/plain' });
   if (canShareFiles([file])) {
     if (await shareFiles([file])) sent();
   } else {

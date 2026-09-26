@@ -88,7 +88,7 @@ export function parseMediaLink(input) {
 
 /**
  * What a card shows for a stored image: { kind: 'youtube', id, start, href,
- * thumb, embed } | { kind: 'tenor', id, href, embed } | { kind: 'image', src }
+ * thumb, frames, embed } | { kind: 'tenor', id, href, embed } | { kind: 'image', src }
  * for any other https URL; null for photos (data URIs).
  */
 export function mediaOf(img) {
