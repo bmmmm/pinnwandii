@@ -8,7 +8,7 @@ import { deepEqual, equal, notEqual, ok, rejects, throws } from 'node:assert/str
 import {
   LIMITS, addContrib, addOwnPost, decodeBoard, decodeContrib, decodeInvite, encodeBoard,
   encodeContrib, encodeInvite, extractContribs, fromBase64, fromBase64url,
-  deletePost, deletedIn, mergeBoard, mergeContribs, mergeText, originOf, pack, parseBackup, toBase64, toBase64url, toTuple, unpack, validate,
+  applyRead, deletePost, deletedIn, joinReads, mergeBoard, mergeContribs, mergeText, originOf, pack, parseBackup, readText, toBase64, toBase64url, toTuple, unpack, validate,
 } from './codec.js';
 import { encodeJpeg, jpegHeader, ssim, strippedLength, stripJpeg, unstripJpeg } from './jpeg.js';
 import { FRAME_SRC, PLAYER_JS, hasPlayable, mediaOf, parseMediaLink, playInline, scriptHash, viewToken } from './media.js';
@@ -643,5 +643,35 @@ test('35 keeping a card deleted elsewhere still remembers the other deletions', 
 test('36 a link from a newer app counts as newer, not as broken', async () => {
   const tok = await encodeContrib(contrib);
   const target = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [] };
-  deepEqual(await mergeText(target, `https://x.test/#c=4.${tok.slice(2)} und https://x.test/#b=4.${tok.slice(2)}`), { added: 0, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0, newer: 2 });
+  deepEqual(await mergeText(target, `Anna: https://x.test/#c=4.${tok.slice(2)}`), { added: 0, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0, newer: 1 });
+  deepEqual(await mergeText(target, ` https://x.test/#b=4.${tok.slice(2)}\n`), { added: 0, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0, newer: 1 });
+});
+
+test('37 an admin link counts only when pasted on its own: one inside a chat cannot drop greetings', async () => {
+  const [anna, ben] = await Promise.all(['Anna', 'Ben'].map((name) => encodeContrib({ ...contrib, name })));
+  const origins = await Promise.all([anna, ben].map(async (t) => originOf(await decodeContrib(t))));
+  const crafted = await encodeBoard({ id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: origins });
+  const chat = `[26.09.26] Mallory: https://x.test/#b=${crafted}\n[26.09.26] Anna: https://x.test/#c=${anna}\n[26.09.26] Ben: https://x.test/#c=${ben}`;
+  const target = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [] };
+  deepEqual(await mergeText(target, chat), { added: 2, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0, newer: 0 });
+  deepEqual((await readText(`https://x.test/#b=${crafted}`)).boards.map((b) => b.deleted), [origins]);
+});
+
+test('38 several files at once: copies first, then links, and only posts agreed on are deleted here', async () => {
+  const [kai, xaver] = await Promise.all(['Kai', 'Xaver'].map((name) => encodeContrib({ ...contrib, name })));
+  const here = { id: ID, title: 'T', preset: 'p', hue: 1, contribs: [], deleted: [] };
+  await mergeContribs(here, [kai]);
+  const kaiOrigin = here.contribs[0].origin;
+  const xaverOrigin = originOf(await decodeContrib(xaver));
+  const backup = JSON.stringify([ID, 'T', 'p', 1, [], [kaiOrigin, xaverOrigin]]); // another device deleted both
+  const reads = await Promise.all([`https://x.test/#c=${xaver}`, backup].map(readText));
+  const outcomes = [];
+  for (const order of [reads, [...reads].reverse()]) {
+    for (const drop of [new Set(), new Set([kaiOrigin])]) { // "Hier behalten" / "Hier auch löschen" (asked about Kai only)
+      const b = structuredClone(here);
+      const r = applyRead(b, joinReads(order), { drop });
+      outcomes.push([b.contribs.map((e) => e.name).join(), r.added, r.dupes, r.removed].join('|'));
+    }
+  }
+  deepEqual(outcomes, ['Kai|0|1|0', '|0|1|1', 'Kai|0|1|0', '|0|1|1']);
 });

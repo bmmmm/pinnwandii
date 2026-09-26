@@ -181,7 +181,7 @@ function checkImg(img, wire) {
   // JSON is hand-made, and one the tail cannot carry would break every admin
   // link built from the board.
   const m = !wire && DATA_RE.exec(img);
-  if (m && m[1].length % 4 === 0 && dataUriBytes(m[1]) <= LIMITS.photo) return;
+  if (m && m[1].length % 4 !== 1 && dataUriBytes(m[1]) <= LIMITS.photo) return; // 4n + 1 characters are no base64
   fail('invalid', `Bild, Video oder GIF: ein https-Link mit höchstens ${LIMITS.url} Zeichen oder ein kleines Foto.`);
 }
 function checkEntry(t, wire = false) {
@@ -372,19 +372,21 @@ export const deletedIn = (board, other) =>
 
 /**
  * Merges another copy of the same board (admin link, backup) into `board`:
- * posts deleted there are deleted here too (with `deletions` false the
- * posts still here stay, and only the others are remembered as deleted),
+ * posts deleted there are deleted here too (a post still here only if it is
+ * in `drop`, when given, else only with `deletions`; the others are just
+ * remembered as deleted),
  * posts known here stay as they are here (edits on this device win), new
  * posts are added.
  */
-export function mergeBoard(board, other, { deletions = true } = {}) {
+export function mergeBoard(board, other, { deletions = true, drop = null } = {}) {
   const r = { added: 0, dupes: 0, foreign: 0, full: 0, removed: 0 };
   if (other.id !== board.id) {
     r.foreign = other.contribs.length;
     return r;
   }
   for (const origin of other.deleted ?? []) {
-    if (!deletions && board.contribs.some((e) => e.origin === origin)) continue; // kept here on request
+    const here = board.contribs.some((e) => e.origin === origin);
+    if (here && !(drop ? drop.has(origin) : deletions)) continue; // kept here: only what was agreed goes
     const before = board.contribs.length;
     deletePost(board, origin);
     r.removed += before - board.contribs.length;
@@ -442,13 +444,15 @@ export async function mergeContribs(board, candidates) {
   return r;
 }
 
-const ADMIN_RE = /#b=(\d+\.[A-Za-z0-9_-]+)/g;
+const ADMIN_RE = /^\s*\S*#b=(\d+\.[A-Za-z0-9_-]+)\s*$/;
 
 /**
  * Reads whatever a person pasted or dropped, without touching any board:
  * { boards, contribs, broken, newer }. A backup file (the board tuple as
- * JSON) is one board. Any other text is searched for admin links (boards)
- * and contribution links. Chat exports also start with "[" (a timestamp),
+ * JSON) is one board, and so is an admin link pasted on its own: one
+ * inside a chat is ignored, since a guest could have posted it and its
+ * deletions would drop greetings. Any other text is searched for
+ * contribution links. Chat exports also start with "[" (a timestamp),
  * so only text that really parses as JSON counts as a backup; JSON that is
  * no backup (Telegram exports chats as JSON) is searched too, and with
  * nothing in it counts as one broken item. `newer` counts links from a
@@ -462,13 +466,15 @@ export async function readText(text) {
     return read;
   }
   const count = (code) => { read[code === 'version' ? 'newer' : 'broken']++; };
-  for (const [, tok] of text.matchAll(ADMIN_RE)) {
+  const admin = ADMIN_RE.exec(text)?.[1];
+  if (admin) {
     try {
-      read.boards.push(await decodeBoard(tok));
+      read.boards.push(await decodeBoard(admin));
     } catch (e) {
       if (!(e instanceof CodecError)) throw e;
       count(e.code);
     }
+    return read;
   }
   const cands = extractContribs(text);
   for (const cand of cands) {
@@ -481,19 +487,26 @@ export async function readText(text) {
 }
 
 /**
- * Applies what readText found to a board, with no await in between: boards
- * merge as copies of this one (mergeBoard; `deletions` is a boolean or a
- * function of the other board), contributions are added. Returns the counts.
+ * Applies what readText found (one read, or several joined with joinReads) to
+ * a board, with no await in between: first every copy of a board (mergeBoard,
+ * with `opts`), then the contributions, so the outcome does not depend on the
+ * order of the files. Returns the counts.
  */
-export function applyRead(board, read, { deletions = true } = {}) {
+export function applyRead(board, read, opts) {
   const r = { added: 0, dupes: 0, foreign: 0, broken: read.broken, full: 0, removed: 0, newer: read.newer };
   for (const other of read.boards) {
-    const m = mergeBoard(board, other, { deletions: typeof deletions === 'function' ? deletions(other) : deletions });
+    const m = mergeBoard(board, other, opts);
     for (const k of Object.keys(m)) r[k] += m[k];
   }
   for (const c of read.contribs) r[addContrib(board, c)]++;
   return r;
 }
+
+/** Several reads as one. */
+export const joinReads = (reads) => ({
+  boards: reads.flatMap((x) => x.boards), contribs: reads.flatMap((x) => x.contribs),
+  broken: reads.reduce((n, x) => n + x.broken, 0), newer: reads.reduce((n, x) => n + x.newer, 0),
+});
 
 /** Merges pasted or dropped text into a board: readText, then applyRead. */
 export async function mergeText(board, text, opts) {

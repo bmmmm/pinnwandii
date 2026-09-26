@@ -33,7 +33,9 @@ Three roles, one static page:
    start time kept), which travels like an image link, so the link format
    is unchanged.
 3. **Organizer** collects the replies on the merge page: paste links, paste a
-   whole chat export, read the clipboard or drop the files. Duplicates,
+   whole chat export, read the clipboard or drop the files; a backup or an
+   admin link pasted on its own merges too (one inside a chat is ignored:
+   a guest could have posted it). Duplicates,
    foreign pinboards and truncated links are counted, not merged. Every
    card has an edit button (✎): correct name or text, change the sticker,
    add or replace the photo, set a video or GIF link, remove the picture,
@@ -56,9 +58,10 @@ deleted ones: pasting the same chat again, or merging an older backup or
 admin link, neither brings a deleted card back nor adds an edited one
 twice. A card the organizer writes comes from no link and gets a random
 origin, so the same card written again after a deletion is new.
-Deletions made on another device travel with its admin link or backup,
-after the app asks (with the names) whether to delete here too;
-where both devices edited the same card, the device you merge into keeps
+Deletions made on another device travel with its admin link or backup: a
+card still here is only deleted after the app asks, by name, whether to
+delete it here too (several files at once ask once, and are applied copies
+first, links second, so their order does not matter); where both devices edited the same card, the device you merge into keeps
 its version. A card's origin is only written where it does not follow from
 the card itself, which keeps admin links and backups 11–13 characters a
 card shorter.

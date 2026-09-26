@@ -21,23 +21,28 @@ const fullNote = (n) => (n ? ` ${n} nicht übernommen: Pinnwand voll (höchstens
 const removedNote = (n) => (n ? `, ${n} gelöscht` : '');
 const NO_MEDIA = 'Dieser Link zeigt auf kein einzelnes Video oder GIF: Öffne es und teile dessen Link.';
 
-// Another copy of a board (backup, admin link) deletes posts here only after
-// asking: a crafted file could otherwise make cards disappear for good.
-async function askDeletions(other) {
+// Another copy of a board (backup, admin link) deletes a post here only when
+// asked by name: a crafted file could otherwise make cards disappear for
+// good. Returns the origins agreed on; `asked` keeps a post from being asked
+// about twice in one run.
+async function askDeletions(other, asked = new Set()) {
   const local = store.load(other.id);
-  const gone = local ? codec.deletedIn(local, other) : [];
+  const gone = (local ? codec.deletedIn(local, other) : []).filter((e) => !asked.has(e.origin));
+  if (!gone.length) return [];
+  for (const e of gone) asked.add(e.origin);
   const names = gone.map((e) => e.name).join(', ');
-  return !gone.length || confirmDialog(gone.length === 1
+  const yes = await confirmDialog(gone.length === 1
     ? `Dort wurde 1 Beitrag gelöscht (${names}). Hier auch löschen?`
     : `Dort wurden ${gone.length} Beiträge gelöscht (${names}). Hier auch löschen?`, { ok: 'Hier auch löschen', cancel: 'Hier behalten' });
+  return yes ? gone.map((e) => e.origin) : [];
 }
 // Merges another copy into the stored board. The board is loaded after the
 // question, so a post another tab saved meanwhile is merged into, not
 // overwritten. Null if the board is not (or no longer) stored here.
 async function mergeCopy(other) {
-  const deletions = await askDeletions(other);
+  const drop = new Set(await askDeletions(other));
   const local = store.load(other.id);
-  return local && { local, before: local.contribs.length, r: codec.mergeBoard(local, other, { deletions }) };
+  return local && { local, before: local.contribs.length, r: codec.mergeBoard(local, other, { drop }) };
 }
 // Signal (Android, Desktop) sends text over 2048 UTF-8 bytes as an attachment,
 // and the link arrives cut off; Telegram splits at 4096 characters. The whole
@@ -58,18 +63,19 @@ function h(tag, props = {}, ...kids) {
 // popovers (Safari < 17, Chrome < 114) it would show as an empty box all the
 // time and under dialogs, so there it is hidden and moved into the open one.
 const POPOVER = typeof HTMLElement.prototype.showPopover === 'function';
-if (!POPOVER) {
-  $('#toast').removeAttribute('popover');
-  $('#toast').hidden = true;
-}
+if (POPOVER) $('#toast').hidden = false; // hidden in the page until this runs; a closed popover stays hidden
+else $('#toast').removeAttribute('popover');
 let toastTimer;
 function toast(msg) {
   const t = $('#toast');
   t.textContent = msg;
   if (POPOVER) {
-    try { t.showPopover(); } catch { /* already shown */ }
+    if (t.matches(':popover-open')) t.hidePopover(); // shown again: above a dialog opened meanwhile
+    t.showPopover();
   } else {
-    ($('dialog[open]') ?? document.body).append(t);
+    const d = $('dialog[open]');
+    (d ?? document.body).append(t);
+    d?.addEventListener('close', () => { if (t.parentNode === d) document.body.append(t); }, { once: true }); // a toast right before the dialog closes stays
     t.hidden = false;
   }
   clearTimeout(toastTimer);
@@ -698,21 +704,21 @@ $('#card-delete').onclick = async () => {
 // Reads and asks first, then applies everything to a fresh copy with no
 // await in between: a post another tab saves meanwhile is kept.
 async function mergeRun(texts) {
-  const id = current.id;
+  const id = current?.id;
+  if (!id) return; // left while the clipboard or the files were read
   const reads = [];
   for (const t of texts) reads.push(await codec.readText(t));
-  const answers = new Map(); // other copy of this board -> delete here too?
-  for (const read of reads) {
-    for (const other of read.boards) if (other.id === id) answers.set(other, await askDeletions(other));
+  const read = codec.joinReads(reads);
+  const drop = new Set();
+  const asked = new Set();
+  for (const other of read.boards) {
+    if (current?.id !== id) return; // left meanwhile: no more questions
+    if (other.id === id) for (const origin of await askDeletions(other, asked)) drop.add(origin);
   }
-  if (current?.id !== id) return; // left meanwhile
+  if (current?.id !== id) return;
   reloadCurrent();
   const before = current.contribs.length;
-  const total = { added: 0, dupes: 0, foreign: 0, broken: 0, full: 0, removed: 0, newer: 0 };
-  for (const read of reads) {
-    const r = codec.applyRead(current, read, { deletions: (other) => answers.get(other) ?? true });
-    for (const k of Object.keys(total)) total[k] += r[k];
-  }
+  const total = codec.applyRead(current, read, { drop });
   const saved = store.save(current);
   renderBoard(current, before - total.removed);
   renderMergeList();
@@ -997,7 +1003,7 @@ async function updateWrite() {
     if (write.pending !== pending) return; // superseded by newer input
     write.link = link;
     renderPreview(fitted); // the photo as sent
-    if (dropped) $('#write-note').textContent = ''; // "Foto übernommen" no longer holds; the size line says why
+    if (dropped && !write.shrinking) $('#write-note').textContent = ''; // "Foto übernommen" no longer holds; the size line says why
     $('#write-link').value = write.link;
     const note = tooLong ? ' · zu lang für eine Signal-Nachricht: kürzen oder als Datei senden.'
       : dropped ? ' · ohne Foto: Mit diesem langen Gruß passt es nicht in eine Nachricht.' : '';

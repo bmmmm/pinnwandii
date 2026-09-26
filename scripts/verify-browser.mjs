@@ -11,6 +11,7 @@
 // Screenshots and downloads go to OUT (default: a temp directory).
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -88,6 +89,19 @@ const text = (page, sel) => page.$eval(sel, (e) => e.textContent);
 // A file input the keyboard can reach (focus lands on it), invisible inside its label button.
 const focusable = (page, sel) => page.$eval(sel, (e) => { e.focus(); return document.activeElement === e && getComputedStyle(e).opacity === '0' && !!e.closest('label.button'); });
 const visible = (page, sel) => page.$eval(sel, (e) => !e.hidden && getComputedStyle(e).display !== 'none').catch(() => false);
+// The rendered colour of one CSS pixel, from a 1×1 screenshot (a PNG whose
+// single row needs no unfiltering). Hit tests cannot tell what is painted on
+// top: outside an open modal dialog everything is inert.
+const pixelAt = async (page, x, y) => {
+  const png = Buffer.from(await page.screenshot({ clip: { x, y, width: 1, height: 1 } }));
+  const idat = [];
+  for (let off = 8; off < png.length;) {
+    const len = png.readUInt32BE(off);
+    if (png.toString('ascii', off + 4, off + 8) === 'IDAT') idat.push(png.subarray(off + 8, off + 8 + len));
+    off += 12 + len;
+  }
+  return [...zlib.inflateSync(Buffer.concat(idat)).subarray(1, 4)];
+};
 const cardCount = (page) => page.$$eval('#wall .card', (c) => c.length);
 const waitFor = (page, fn, arg, ms = 5000) => page.waitForFunction(fn, { timeout: ms }, arg);
 const tokenOf = (link) => link.match(/#c=(\S+)/)?.[1];
@@ -567,7 +581,7 @@ try {
   if (lonelyStart) await lonely.click('#receive-start');
   await waitFor(lonely, () => !document.querySelector('#view-start').hidden, null, 2000).catch(() => {});
   check('11 a greeting opened where its board is not: says how it arrives, leads to the start page', lonelyHint.startsWith('So kommt dein Glückwunsch an.') && lonelyStart && await visible(lonely, '#view-start'), lonelyHint.slice(0, 60));
-  await lonely.close();
+  await lonely.browserContext().close();
   check('11 full board: receive view says so, board unchanged', await visible(fullPage, '#view-receive') && hintFull.includes('voll') && await fullPage.evaluate((id) => JSON.parse(localStorage.getItem(`pinnwandii:${id}`))[4].length === 500, fullBoard.id), hintFull);
   await fullPage.close();
 
@@ -616,7 +630,34 @@ try {
   await waitFor(nopop, () => document.querySelector('#toast').textContent.startsWith('Kein Zugriff'));
   const onTop = await nopop.$eval('#toast', (t) => { const r = t.getBoundingClientRect(); return r.width > 0 && t.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); });
   check('13 no popovers: no empty toast box, a toast shows above the open dialog', boxBefore && onTop, `hidden before ${boxBefore}, on top ${onTop}`);
+  await nopop.click('#dlg-merge [data-close]');
+  // a toast right before its dialog closes: saving a card deleted meanwhile
+  await nopop.$eval('#wall .card .edit', (b) => b.click());
+  await waitFor(nopop, () => document.querySelector('#dlg-card').open);
+  await nopop.evaluate((id) => { const t = JSON.parse(localStorage.getItem(`pinnwandii:${id}`)); t[4] = []; localStorage.setItem(`pinnwandii:${id}`, JSON.stringify(t)); }, npId);
+  await nopop.$eval('#card-save', (b) => b.click());
+  await waitFor(nopop, () => !document.querySelector('#dlg-card').open && document.querySelector('#toast').textContent.includes('inzwischen gelöscht'));
+  await waitFor(nopop, () => document.querySelector('#toast').getBoundingClientRect().width > 0, null, 1000).catch(() => {}); // "close" comes as a task
+  const afterClose = await nopop.$eval('#toast', (t) => { const r = t.getBoundingClientRect(); return r.width > 0 && t.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); });
+  check('13 no popovers: a toast right before its dialog closes stays visible', afterClose, await text(nopop, '#toast'));
   await nopop.close();
+  // with popovers: a toast shown again while a dialog opened after it is on top
+  const restack = await newPage(oldCtx, 'restack');
+  await restack.goto(`${ORIGIN}/`, { waitUntil: 'networkidle0' });
+  await restack.evaluate((id) => { localStorage.setItem(`pinnwandii:${id}`, JSON.stringify([id, 'Popover', 'p', 30, [['Anna', 'Hallo', '', '']]])); location.hash = `#o=${id}`; navigator.clipboard.readText = () => Promise.reject(new Error('denied')); navigator.clipboard.writeText = () => Promise.resolve(); }, npId);
+  await waitFor(restack, () => document.querySelectorAll('#wall .card').length === 1);
+  await restack.click('#toolbar [data-act=merge]');
+  await restack.click('#merge-clip');
+  await waitFor(restack, () => document.querySelector('#toast').textContent.startsWith('Kein Zugriff'));
+  await restack.click('#dlg-merge [data-close]');
+  await restack.click('#toolbar [data-act=invite]');
+  await waitFor(restack, () => document.querySelector('#dlg-share').open);
+  await restack.click('#share-copy');
+  await waitFor(restack, () => document.querySelector('#toast').textContent === 'Kopiert.');
+  const [tx, ty] = await restack.$eval('#toast', (t) => { const r = t.getBoundingClientRect(); return [Math.round(r.x + 4), Math.round(r.y + r.height / 2)]; }); // in its padding: the toast's own dark
+  const restacked = await pixelAt(restack, tx, ty);
+  check('13 a toast shown again is painted above a dialog opened after it', restacked.every((v, k) => Math.abs(v - [29, 29, 31][k]) <= 3), `pixel ${restacked}, the toast is #1d1d1f; under the dialog's backdrop it is darker`);
+  await restack.close();
   await old.close();
 
   // ---- 14. curating: edit, remove photo, move, delete; merging again changes nothing -----
@@ -1005,12 +1046,36 @@ try {
     const emil = await encodeBoard({ id: tid, title: 'Zwei Tabs', preset: 'p', hue: 90, contribs: ['Anna', 'Emil'].map((name) => ({ name, text: `Gruß von ${name}`, sticker: '', img: '' })), deleted: [] });
     await openBoard();
     await t1.$eval('#toolbar [data-act=merge]', (b) => b.click());
-    await setValue(t1, '#merge-text', `Mein Admin-Link: ${ORIGIN}/#b=${emil}`);
+    await setValue(t1, '#merge-text', `${ORIGIN}/#b=${emil}\n`); // on its own: inside a chat it is ignored (test 37)
     await t1.evaluate(() => { document.querySelector('#merge-result').textContent = ''; });
     await t1.$eval('#merge-go', (b) => b.click());
     await waitFor(t1, () => document.querySelector('#merge-result').textContent.length > 0);
     const r5 = [await text(t1, '#merge-result'), await storedNames()].join(' | ');
     check('16 an admin link pasted into Einsammeln merges its cards', r5 === '1 übernommen, 1 doppelt, 0 fremde Pinnwand, 0 defekt | Anna,Ben,Emil', r5);
+    await t1.$eval('#dlg-merge [data-close]', (b) => b.click());
+    // two files at once, a greeting and the other device's backup that deleted it and a post
+    // here: only the post here is asked about, and the file order does not matter
+    const kaiTuple = post('Kai');
+    const oKai = originOf({ name: 'Kai', text: 'Gruß von Kai', sticker: '', img: '' });
+    const xaverTok = await encodeContrib({ id: tid, name: 'Xaver', text: 'Gruß von Xaver', sticker: '', img: '' });
+    const oXaver = originOf({ name: 'Xaver', text: 'Gruß von Xaver', sticker: '', img: '' });
+    const xaverFile = path.join(OUT, 'gruss-xaver.txt');
+    const killFile = path.join(OUT, 'zwei-tabs-kai.json');
+    fs.writeFileSync(xaverFile, `Glückwunsch von Xaver: ${ORIGIN}/#c=${xaverTok}`);
+    fs.writeFileSync(killFile, JSON.stringify([tid, 'Zwei Tabs', 'p', 90, [], [oKai, oXaver]]));
+    await t1.evaluate((id, t) => localStorage.setItem(`pinnwandii:${id}`, JSON.stringify(t)), tid, [tid, 'Zwei Tabs', 'p', 90, [kaiTuple]]);
+    await t1.evaluate(() => { location.hash = ''; });
+    await t1.evaluate((id) => { location.hash = `#o=${id}`; }, tid);
+    await waitFor(t1, () => document.querySelectorAll('#wall .card').length === 1);
+    await t1.$eval('#toolbar [data-act=merge]', (b) => b.click());
+    await t1.evaluate(() => { document.querySelector('#merge-result').textContent = ''; });
+    await (await t1.$('#merge-files')).uploadFile(xaverFile, killFile);
+    await waitFor(t1, () => document.querySelector('#dlg-confirm').open);
+    const asked = await text(t1, '#confirm-text');
+    await t1.$eval('#confirm-cancel', (b) => b.click());
+    await waitFor(t1, () => document.querySelector('#merge-result').textContent.length > 0);
+    const r6 = [asked, await text(t1, '#merge-result'), await storedNames()].join(' | ');
+    check('16 two files at once: asked only about the post here, kept, the greeting deleted there stays out', r6 === 'Dort wurde 1 Beitrag gelöscht (Kai). Hier auch löschen? | 0 übernommen, 1 doppelt, 0 fremde Pinnwand, 0 defekt | Kai', r6);
     await t1.$eval('#dlg-merge [data-close]', (b) => b.click());
     // deleted in tab 2 while tab 1 shows it: tab 1 leaves instead of storing it again
     await t2.evaluate((id) => localStorage.removeItem(`pinnwandii:${id}`), tid);
