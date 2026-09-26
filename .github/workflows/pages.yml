@@ -1,4 +1,4 @@
-# Static site → GitHub Pages. No build step — index.html is the whole site.
+# Static site → GitHub Pages. No build step: the app files are copied as they are.
 name: pages
 
 on:
@@ -24,8 +24,13 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
+      # only what the site serves: not the tests, scripts or README
+      - run: |
+          mkdir _site
+          cp index.html style.css app.js codec.js jpeg.js media.js _site/
+          if [ -d boards ]; then cp -R boards _site/; fi
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: .
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v5

@@ -13,7 +13,8 @@ organizer's browser storage.
 Three roles, one static page:
 
 1. **Organizer** creates a pinboard (title, palette, hue) and gets an
-   *invitation link* (`#i=`). It is short and never changes.
+   *invitation link* (`#i=`). It stays short: it does not grow with the
+   replies.
 2. **Guests** open the invitation, write a greeting, pick a sticker, add a
    photo or an https image link, and *send back a contribution link* (`#c=`)
    over the same channel they were invited on (messenger, mail) or as a
@@ -40,15 +41,15 @@ Three roles, one static page:
    card has an edit button (✎): correct name or text, change the sticker,
    add or replace the photo, set a video or GIF link, remove the picture,
    move the card, delete it. *Karte schreiben* adds a card of the
-   organizer's own. Then *Fertige Seite* builds
-   the finished pinboard: one HTML file without JavaScript, photos
-   embedded, videos as thumbnail links. A board with YouTube videos or
-   Tenor GIFs also gets a *videos file*: the same page with one small
-   script (allowed by its hash in the page's CSP) that plays them in place
-   once the page is online. From a local file YouTube refuses to play (it
-   needs the page's address as Referer), so there the videos file shows
-   *Online ansehen*: a `#v=` link that opens the same board in the app,
-   where the videos play; too big for one link, it carries the cards
+   organizer's own. Then *Fertige Seite* builds the finished pinboard:
+   one HTML file, photos embedded, for every final form. Printed, a video
+   is its thumbnail. On screen YouTube's three stills of it flip over the
+   thumbnail. With videos or Tenor GIFs the page carries one small script
+   (allowed by its hash in the page's CSP): from a local file a tap opens
+   YouTube, which refuses to play there (it needs the page's address as
+   Referer), and plays a Tenor GIF in place; hosted, both play in place.
+   *Online ansehen* gives a `#v=` link that opens the same board in the
+   app, where the videos play; too big for one link, it carries the cards
    without their photos, or only the videos, and says so.
 
 The organizer is the database. Nothing is ever written to a server, and the
@@ -66,12 +67,13 @@ copies' cards, then the links), so which cards end up on the board, and
 which are remembered as deleted, does not depend on their order; only the
 order of new cards does, and which version wins when two copies edited a
 card this device does not have yet. Where both devices edited the same
-card, the device you merge into keeps its version. A card's origin is only written where it does not follow from
-the card itself, which keeps admin links and backups 11–13 characters a
-card shorter.
+card, the device you merge into keeps its version. A card's origin is only
+written where it does not follow from the card itself, which keeps admin
+links and backups 11–13 characters a card shorter.
 
 Videos and GIFs on the wall: a YouTube card shows the video's thumbnail
-(loaded from YouTube at once) and plays in place on a click, through
+and its three stills as a flip-book (loaded from YouTube at once; still
+with reduced motion) and plays in place on a click, through
 `youtube-nocookie.com`; a Tenor GIF waits for a click, because Tenor's
 player loads Google Analytics and ad trackers; a Giphy GIF or a direct GIF
 address is a plain image and shows at once. A video whose owner disabled
@@ -86,13 +88,14 @@ embedding shows YouTube's notice with a link to watch it there.
 | Contribution with photo | whole message ≤ 1 900 bytes | one message in any messenger, Signal included |
 | Admin link `#b=` (whole board) | 3–4 KB for 50 texts, ~1 KB more per photo, offered up to 32 000 chars | second device, backup |
 | Finished page | file | download, share, print |
-| Videos file | file, plus an *Online ansehen* link `#v=`: the whole board up to 32 000 chars, else all cards without photos, else only the cards with players, else none (each card then links to YouTube or Tenor) | download, share; the link opens in the browser |
+| Online view `#v=` (*Online ansehen*) | the whole board up to 32 000 chars, else all cards without photos, else only the cards with players, else none | the link opens the board in the app |
 
 Tokens are `3.<base64url>` of `u32 len | zlib(JSON) | photo bytes…`. A
 link cut off while copying is caught by the lengths and the zlib checksum
 and gives a clear message; the checksum covers the text only, so a changed
-character inside the photo bytes mostly shows as a changed or broken photo. Only version 3
-is read (versions 1 and 2 never left testing). Hard limits (`codec.js`):
+character inside the photo bytes mostly shows as a changed or broken
+photo. Only version 3 is read (versions 1 and 2 never left testing). Hard
+limits (`codec.js`):
 title 80, name 60, text 1000, sticker 8 code points, image or video link
 500, photo 4 KB, 500 contributions, 2000 remembered deletions, token
 40 000 chars.
@@ -103,8 +106,8 @@ title 80, name 60, text 1000, sticker 8 code points, image or video link
 - Second device or in-app browser without storage: use the *Admin-Link* or
   the JSON backup from the settings dialog.
 - Publish the finished board under a short link: commit the built file as
-  `boards/<name>.html` in this repository; GitHub Pages serves it. Served
-  like that, the videos file plays its videos in place.
+  `boards/<name>.html` in this repository; GitHub Pages serves it, and
+  there its videos play in place.
 
 ## Repository layout
 
@@ -118,7 +121,7 @@ title 80, name 60, text 1000, sticker 8 code points, image or video link
 | `app.js` | Router, views, storage, photo pipeline, static page builder |
 | `test.mjs` | `node --test` suite for codec and photos |
 | `scripts/verify-browser.mjs` | End-to-end check in headless Chromium |
-| `.github/workflows/pages.yml` | Deploys the repository root to GitHub Pages |
+| `.github/workflows/pages.yml` | Deploys the app files (and `boards/`) to GitHub Pages |
 
 ## Development
 
@@ -127,10 +130,11 @@ python3 -m http.server 8765   # ES modules need http://, not file://
 node --test test.mjs          # Node ≥ 21.2
 ```
 
-No dependencies, no build. A videos file built from a local copy links its
-*Online ansehen* to that copy (e.g. `localhost`); build it from the hosted
-app to share it. The browser check needs `puppeteer-core` and a Chromium
-outside the repository:
+No dependencies, no build. *Online ansehen* from a local copy links to
+that copy (e.g. `localhost`); use the hosted app to share it. The browser
+check needs `puppeteer-core` and a Chromium outside the repository
+(`CHROME`, by default Playwright's Chromium under
+`~/Library/Caches/ms-playwright`):
 
 ```sh
 npm i --prefix ~/.cache/pinnwandii-verify puppeteer-core

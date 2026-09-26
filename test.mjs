@@ -724,3 +724,17 @@ test('40 a photo data URI is valid exactly when atob can read it', () => {
   ok(validate('contrib', [ID, 'M', 'x', '', ok4.replace(/=+$/, '')]).img); // unpadded: 4n + 2
   for (const b64 of ['/9j/4A=', 'AAAAA', '/9j/4AA=A']) throws(() => validate('contrib', [ID, 'M', 'x', '', 'data:image/jpeg;base64,' + b64]), { code: 'invalid' }, b64);
 });
+
+test('41 the Pages deploy copies every file the app loads', () => {
+  const copied = /cp ([^\n]+) _site\//.exec(readFileSync(new URL('./.github/workflows/pages.yml', import.meta.url), 'utf8'))?.[1].split(/\s+/) ?? [];
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const need = new Set(['index.html', ...[...html.matchAll(/(?:src|href)="([\w.-]+\.(?:js|css))"/g)].map((m) => m[1])]);
+  const modules = [...need].filter((f) => f.endsWith('.js'));
+  for (const file of modules) { // grows while it runs: imports of imports
+    for (const [, dep] of readFileSync(new URL(`./${file}`, import.meta.url), 'utf8').matchAll(/from '\.\/([\w.-]+\.js)'/g)) {
+      if (!need.has(dep)) modules.push(dep);
+      need.add(dep);
+    }
+  }
+  deepEqual([...need].filter((f) => !copied.includes(f)), [], `copied: ${copied.join(' ')}`);
+});
