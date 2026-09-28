@@ -213,6 +213,11 @@ try {
   const inviteText = await page.$eval('#share-text', (e) => e.value);
   const inviteLink = inviteText.match(/https?:\/\/\S+#i=\S+/)?.[0];
   check('2 invite link ~120 chars', !!inviteLink && inviteLink.length < 200, `${inviteLink?.length} chars`);
+  await page.evaluate(() => { window.__copied = null; navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve(); }; });
+  await page.click('#share-copy-link');
+  check('2 "Nur den Link kopieren": the bare invitation link', (await page.evaluate(() => window.__copied)) === inviteLink, (await page.evaluate(() => window.__copied))?.slice(0, 60));
+  await page.click('#share-copy');
+  check('2 "Kopieren": the sentence around the link', (await page.evaluate(() => window.__copied)) === inviteText && inviteText !== inviteLink);
   await page.click('#dlg-share [data-close]');
 
   const guestCtx = await browser.createBrowserContext();
@@ -232,7 +237,8 @@ try {
   const photoMs = Date.now() - t0;
   await waitFor(guest, () => document.querySelector('#write-link').value.length > 100);
   const guestLink = await guest.$eval('#write-link', (e) => e.value);
-  const guestMsg = `Glückwunsch von Anna Müller für „Alles Gute zum 80., Oma!“: ${guestLink}`;
+  const msgOf = (link) => `Glückwunsch von Anna Müller für „Alles Gute zum 80., Oma!“: ${link}`; // what "Senden" sends around the link
+  const guestMsg = msgOf(guestLink);
   const sent = await decodeContrib(tokenOf(guestLink));
   await waitFor(guest, () => document.querySelector('#preview .card img')?.complete);
   check('2 preview shows the photo + sticker', await guest.evaluate(() => document.querySelector('#preview .card img[src^="data:image/jpeg"]')?.naturalWidth > 0 && document.querySelector('#preview .card .sticker')?.textContent === '🎂'));
@@ -255,7 +261,7 @@ try {
   await setValue(guest, '#write-form textarea[name=text]', longText);
   await guest.$eval('#copy-link', (b) => b.click()); // DOM click: the page may reflow while the link is encoded
   await waitFor(guest, () => typeof window.__copied === 'string');
-  const longMsg = await guest.evaluate(() => window.__copied);
+  const longMsg = msgOf(await guest.evaluate(() => window.__copied));
   const longSent = await decodeContrib(tokenOf(longMsg));
   check(`2 1000-char text + photo: message ≤ ${BUDGET} bytes, photo kept, not larger`, utf8(longMsg) <= BUDGET && longSent.text === longText && isPhoto(longSent.img) && photoBytes(longSent.img) <= photoBytes(sent.img), `${utf8(longMsg)} bytes, photo ${photoBytes(longSent.img)} B`);
   const previewSrc = await guest.$eval('#preview .card img', (e) => e.src);
@@ -268,7 +274,7 @@ try {
     await guest.evaluate(() => { window.__copied = null; });
     await guest.$eval('#copy-link', (b) => b.click());
     await waitFor(guest, () => typeof window.__copied === 'string');
-    const msg = await guest.evaluate(() => window.__copied);
+    const msg = msgOf(await guest.evaluate(() => window.__copied));
     return { msg, c: await decodeContrib(tokenOf(msg)), size: await text(guest, '#size'), note: await text(guest, '#write-note') };
   };
   let mid, n = 500; // grow the text until no photo version fits any more
@@ -284,6 +290,7 @@ try {
   await guest.$eval('#copy-link', (b) => b.click()); // DOM click: the page may reflow while the link is encoded
   await waitFor(guest, () => typeof window.__copied === 'string');
   check('3 copy link: toast confirms clipboard write', (await text(guest, '#toast')) === 'Kopiert.', await text(guest, '#toast'));
+  check('3 "Link kopieren" copies the bare link, no words around it', await guest.evaluate(() => window.__copied === document.querySelector('#write-link').value && /^https?:\/\/\S+#c=3\.\S+$/.test(window.__copied)), (await guest.evaluate(() => window.__copied)).slice(0, 60));
   const copiedLink = (await guest.evaluate(() => window.__copied)).match(/https?:\/\/\S+#c=\S+/)[0];
   await page.bringToFront();
   await page.goto(copiedLink, { waitUntil: 'networkidle0' });
@@ -330,9 +337,11 @@ try {
   const decoded = copiedTok ? await decodeContrib(copiedTok).catch((e) => ({ text: 'ERR ' + e.message })) : { text: 'no token' };
   check('P1-3 copied link carries the just-typed text', decoded.text === 'Neuer Text, sofort gesendet.', decoded.text);
   // sent: the form starts over, the photo note included
-  await guest.evaluate(() => { navigator.share = () => Promise.resolve(); });
+  const linkBeforeSend = await guest.$eval('#write-link', (e) => e.value);
+  await guest.evaluate(() => { window.__shared = null; navigator.share = (d) => { window.__shared = d.text; return Promise.resolve(); }; });
   await guest.$eval('#send', (b) => b.click());
   await waitFor(guest, () => document.querySelector('#toast').textContent.startsWith('Danke'));
+  check('3 "Senden" shares the sentence around the link (anchors msgOf to the app)', (await guest.evaluate(() => window.__shared)) === msgOf(linkBeforeSend), (await guest.evaluate(() => window.__shared))?.slice(0, 70));
   const afterSent = await guest.evaluate(() => [document.querySelector('#write-note').textContent, document.querySelector('#write-form textarea[name=text]').value].join('|'));
   check('3 after sending: form and photo note are empty', afterSent === '|', afterSent);
 
@@ -854,7 +863,7 @@ try {
     await waitFor(mg, () => typeof window.__copied === 'string');
     return mg.evaluate(() => window.__copied);
   };
-  const ytMsg = await guestSends('Vera', 'https://youtu.be/M7lc1UVf-VE?si=x&t=1m30s');
+  const ytMsg = `Glückwunsch von Vera für „Mit Videos“: ${await guestSends('Vera', 'https://youtu.be/M7lc1UVf-VE?si=x&t=1m30s')}`; // what "Senden" sends
   const ytSent = await decodeContrib(tokenOf(ytMsg));
   check('15 YouTube link: sent as the canonical URL with its start, one message', ytSent.img === 'https://www.youtube.com/watch?v=M7lc1UVf-VE&t=90' && utf8(ytMsg) <= BUDGET, `${ytSent.img}, ${utf8(ytMsg)} bytes`);
   await waitFor(mg, () => document.querySelector('#preview .card a.media.video img')?.complete).catch(() => {});

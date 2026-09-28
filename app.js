@@ -499,15 +499,19 @@ $('#toolbar').addEventListener('click', (e) => {
 
 // ---- share dialog -----------------------------------------------------------
 
-function openShare(title, hint, text) {
+// `link` is the bare link inside `text`; given, a button copies just that.
+function openShare(title, hint, text, link = '') {
   $('#share-title').textContent = title;
   $('#share-hint').textContent = hint;
   $('#share-text').value = text;
   $('#share-share').hidden = !navigator.share;
+  $('#share-copy-link').hidden = !link;
+  $('#share-copy-link').dataset.link = link;
   openModal($('#dlg-share'));
 }
 $('#share-share').onclick = () => shareText($('#share-text').value);
 $('#share-copy').onclick = () => copyText($('#share-text').value);
+$('#share-copy-link').onclick = () => copyText($('#share-copy-link').dataset.link);
 
 async function openInvite() {
   const link = `${BASE}#i=${await codec.encodeInvite(current)}`;
@@ -515,6 +519,7 @@ async function openInvite() {
     'Einladen',
     'Schick diesen Link an alle, die etwas schreiben sollen. Die Antworten kommen als Links zurück, die du über „Einsammeln“ aufnimmst.',
     `Schreib einen Glückwunsch auf die Pinnwand „${current.title}“: ${link}`,
+    link,
   );
 }
 
@@ -1078,8 +1083,8 @@ writeForm.addEventListener('submit', async (e) => {
     await copyText(shareTextFor());
   }
 });
-$('#copy-link').onclick = async () => {
-  if (await ensureLink()) await copyText(shareTextFor());
+$('#copy-link').onclick = async () => { // the bare link: some want to write their own words around it
+  if (await ensureLink()) await copyText(write.link);
 };
 $('#send-file').onclick = async () => {
   if (!(await ensureLink())) return;
