@@ -30,11 +30,12 @@ import { stripJpeg, unstripJpeg } from './jpeg.js';
 const VERSION = '3';
 const READABLE = ['3'];
 const PRESETS = ['p', 'b', 'd'];
-// photo: an own JPEG is at most ~2 KB (MAX_PHOTO in app.js plus its header);
+// photo: a guest's JPEG is ~1.4 KB (MAX_PHOTO in app.js), an organizer's
+// card photo up to this (CARD_SIDES in app.js: 480 px, ~25 KB for a photo);
 // token: the longest link the app offers is 32 000 characters.
 export const LIMITS = Object.freeze({
   title: 80, name: 60, text: 1000, sticker: 8, url: 500,
-  photo: 4 * 1024, contribs: 500, deleted: 2000, token: 40_000,
+  photo: 32 * 1024, contribs: 500, deleted: 2000, token: 40_000,
   json: 512 * 1024,
 });
 

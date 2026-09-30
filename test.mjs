@@ -46,7 +46,7 @@ test('1 board round-trip keeps umlauts, emoji, newlines and RTL text', async () 
 });
 
 test('2 photo bytes survive the binary tail unchanged', async () => {
-  const bytes = randomBytes(LIMITS.photo);
+  const bytes = randomBytes(24 * 1024); // a photo a token can still carry (LIMITS.token caps it near 29 KB); one at LIMITS.photo lives in storage and backups
   const c = { ...contrib, img: photo(bytes) };
   const back = await decodeContrib(await encodeContrib(c));
   equal(back.img, c.img);
@@ -159,7 +159,7 @@ test('9 size budget: 50 text contributions and one photo contribution', async ()
   equal(big.contribs.length, 50);
   const tok = await encodeBoard(big);
   ok(tok.length <= 12_000, `board token is ${tok.length} chars`);
-  const withPhoto = await encodeContrib({ ...contrib, img: photo(randomBytes(LIMITS.photo, 9)) });
+  const withPhoto = await encodeContrib({ ...contrib, img: photo(randomBytes(1425, 9)) }); // a guest's photo (MAX_PHOTO in app.js)
   ok(withPhoto.length <= 6_000, `photo token is ${withPhoto.length} chars`);
 });
 

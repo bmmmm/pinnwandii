@@ -16,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { decodeBoard, decodeContrib, encodeBoard, encodeContrib, encodeInvite, newId, originOf, toBase64 } from '../codec.js';
+import { LIMITS, decodeBoard, decodeContrib, encodeBoard, encodeContrib, encodeInvite, newId, originOf, toBase64 } from '../codec.js';
 import { encodeJpeg } from '../jpeg.js';
 
 const require = createRequire(path.join(process.env.PUPPETEER_DIR ?? process.cwd(), 'x.js'));
@@ -139,7 +139,7 @@ async function contrast(page) {
 }
 // Test images drawn in the page: a JPEG scene and a PNG with a transparent background.
 async function makeImages(page) {
-  const [jpg, png, slow] = await page.evaluate(async () => {
+  const [jpg, png, slow, noise] = await page.evaluate(async () => {
     const draw = (w, h, fn, type) => {
       const c = document.createElement('canvas');
       c.width = w; c.height = h;
@@ -165,6 +165,13 @@ async function makeImages(page) {
         g.fillStyle = '#f5d400'; g.fillRect(3000, 0, 3000, 4500);
         for (let i = 0; i < 4000; i++) { g.fillStyle = `hsl(${i % 360},70%,50%)`; g.fillRect((i * 97) % 6000, (i * 131) % 4500, 20, 20); }
       }, 'image/jpeg'),
+      // pixel noise: no JPEG size at 480 px fits an organizer's card, a smaller side has to
+      draw(1200, 900, (g) => {
+        const id = g.createImageData(1200, 900);
+        let s = 7;
+        for (let i = 0; i < id.data.length; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; id.data[i] = i % 4 === 3 ? 255 : s >> 23; }
+        g.putImageData(id, 0, 0);
+      }, 'image/png'),
     ];
   });
   const save = (uri, name) => {
@@ -172,7 +179,7 @@ async function makeImages(page) {
     fs.writeFileSync(f, Buffer.from(uri.slice(uri.indexOf(',') + 1), 'base64'));
     return f;
   };
-  return { jpg: save(jpg, 'scene.jpg'), png: save(png, 'transparent.png'), slow: save(slow, 'big.jpg') };
+  return { jpg: save(jpg, 'scene.jpg'), png: save(png, 'transparent.png'), slow: save(slow, 'big.jpg'), noise: save(noise, 'noise.png') };
 }
 
 const browser = await puppeteer.launch({
@@ -754,6 +761,24 @@ try {
   const benPhoto = await cp.evaluate(() => [...document.querySelectorAll('#wall .card')].find((c) => c.querySelector('.name').textContent === 'Ben')?.querySelector('img')?.src ?? '');
   const benLook = isPhoto(benPhoto) ? (await inspect(cp, benPhoto)).mean : [];
   check('14 card dialog: saving waits for the photo, also for one picked while it waits', isPhoto(benPhoto) && benLook[0] > 150 && benLook[2] < 100, `${isPhoto(benPhoto) ? photoBytes(benPhoto) + ' B' : 'no photo'}, mean ${benLook}`);
+  // a photo picked in the dialog keeps 480 px (never sent in a message); pixel noise needs a lower quality to stay within LIMITS.photo
+  const CARD_PHOTO = LIMITS.photo;
+  const benSrc = () => cp.evaluate(() => [...document.querySelectorAll('#wall .card')].find((c) => c.querySelector('.name').textContent === 'Ben')?.querySelector('img')?.src ?? '');
+  const cardPhotoOf = async (file) => {
+    await openCard('Ben');
+    await cardPhoto.uploadFile(file);
+    await waitFor(cp, () => !document.querySelector('#card-note').textContent.startsWith('Foto wird'), null, 30000);
+    await cp.evaluate(() => { document.querySelector('#toast').textContent = ''; });
+    await cp.$eval('#card-save', (b) => b.click());
+    await waitFor(cp, () => !document.querySelector('#dlg-card').open || document.querySelector('#toast').textContent.length > 0, null, 30000).catch(() => {});
+    if (await cp.evaluate(() => document.querySelector('#dlg-card').open)) await cp.$eval('#dlg-card [data-close]', (b) => b.click()); // refused (a photo over the limit): the wall keeps the old one
+    const src = await benSrc();
+    return { src, look: isPhoto(src) ? await inspect(cp, src, `data:image/${file.endsWith('.png') ? 'png' : 'jpeg'};base64,${fs.readFileSync(file).toString('base64')}`) : {} };
+  };
+  const own = await cardPhotoOf(images.jpg);
+  check('14 own card: the photo is 480 px wide, within 32 KB, and looks like the original', isPhoto(own.src) && own.look.w === 480 && photoBytes(own.src) <= CARD_PHOTO && photoBytes(own.src) > 2048 && own.look.ssim > 0.9, `${own.look.w}×${own.look.h} px, ${isPhoto(own.src) ? photoBytes(own.src) : '-'} B, ssim ${own.look.ssim?.toFixed(3)}`);
+  const noisy = await cardPhotoOf(images.noise);
+  check('14 own card: pixel noise still lands within 32 KB (a lower quality or a smaller side)', isPhoto(noisy.src) && noisy.look.w >= 240 && photoBytes(noisy.src) <= CARD_PHOTO && photoBytes(noisy.src) > photoBytes(own.src), `${noisy.look.w}×${noisy.look.h} px, ${isPhoto(noisy.src) ? photoBytes(noisy.src) : '-'} B`);
   // ... and replaced by a video link
   await openCard('Ben');
   const hadPhoto = await cp.evaluate(() => !!document.querySelector('#card-media img[src^="data:image/jpeg"]'));

@@ -636,12 +636,12 @@ field(cardForm, 'photo').addEventListener('change', async (e) => {
   const state = card;
   state.abort?.abort();
   const abort = (state.abort = new AbortController());
-  const shrinking = (state.shrinking = photoLadder(file, abort.signal));
+  const shrinking = (state.shrinking = cardPhoto(file, abort.signal));
   $('#card-note').textContent = 'Foto wird umgewandelt …';
   try {
-    const ladder = await shrinking;
+    const img = await shrinking;
     if (card !== state || state.shrinking !== shrinking) return; // superseded: another photo, a link, the dialog closed
-    setCardMedia(ladder.at(-1).img, ''); // no message to fit: the best version
+    setCardMedia(img, ''); // no message to fit: the card's own size
   } catch (err) {
     if (card !== state || state.shrinking !== shrinking) return;
     state.error = err.message;
@@ -1108,8 +1108,17 @@ const REF = 240;
 const SIDES = [48, 64, 80, 96, 112, 128, 160, 192, 240];
 const QUALITIES = [10, 15, 20, 30, 40, 55, 70, 85];
 const MAX_PHOTO = Math.floor((MESSAGE_BUDGET * 3) / 4); // bytes, before base64
+// A card written or edited in the dialog never travels in a message: its
+// photo is a plain JPEG from the browser's encoder, the first of these sides
+// and qualities that fits LIMITS.photo (a real photo at 480 px: 19 KB in
+// Chrome and Firefox, 30 KB in Safari). Such a card can push the admin link
+// over LINK_CAP (the dialog then points to the backup) and costs ~8 times
+// the storage of a guest's photo (README: limits).
+const CARD_SIDES = [480, 400, 320, 240];
+const CARD_QUALITIES = [0.75, 0.65, 0.55, 0.45];
+const UNREADABLE = 'Das Bild kann nicht gelesen werden.';
 
-function drawn(src, w, h) {
+function canvasWith(src, w, h) {
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
@@ -1118,30 +1127,43 @@ function drawn(src, w, h) {
   ctx.fillRect(0, 0, w, h);
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(src, 0, 0, w, h);
-  return ctx.getImageData(0, 0, w, h).data;
+  return canvas;
 }
+// Halves the picture until it is at most twice the target, then draws the
+// rest in one step: Firefox samples a big downscale from few pixels (measured
+// 2026-10-01, 12 MP to 480 px: SSIM 0.91 in one step, 0.996 halved; Chrome
+// and WebKit filter either way).
+function shrunk(src, w, h) {
+  let cur = src;
+  while (cur.width >= 2 * w && cur.height >= 2 * h) cur = canvasWith(cur, cur.width >> 1, cur.height >> 1);
+  return canvasWith(cur, w, h);
+}
+const drawn = (src, w, h) => shrunk(src, w, h).getContext('2d').getImageData(0, 0, w, h).data;
 const fit = (w, h, side) => {
   const s = Math.min(1, side / Math.max(w, h));
   return [Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s))];
 };
+async function bitmapOf(file) {
+  try {
+    return await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch {
+    return createImageBitmap(file).catch(() => { throw new Error(UNREADABLE); });
+  }
+}
 
 async function photoLadder(file, signal) {
-  let bmp;
-  try {
-    bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
-  } catch {
-    bmp = await createImageBitmap(file).catch(() => { throw new Error('Das Bild kann nicht gelesen werden.'); });
-  }
+  const bmp = await bitmapOf(file);
   const cands = [];
   try {
+    const base = shrunk(bmp, ...fit(bmp.width, bmp.height, 2 * REF)); // every rung is drawn from this, not from the full photo
     const [rw, rh] = fit(bmp.width, bmp.height, REF);
-    const ref = drawn(bmp, rw, rh);
+    const ref = drawn(base, rw, rh);
     let last = 0;
     sides: for (const side of SIDES) {
       const [w, h] = fit(bmp.width, bmp.height, side);
       if (w * 1000 + h === last) break; // the photo is smaller than this side
       last = w * 1000 + h;
-      const px = drawn(bmp, w, h);
+      const px = drawn(base, w, h);
       for (const q of QUALITIES) {
         const jpeg = encodeJpeg(px, w, h, q);
         const size = strippedLength(jpeg);
@@ -1163,8 +1185,29 @@ async function photoLadder(file, signal) {
   cands.sort((a, b) => a.size - b.size);
   const ladder = [];
   for (const c of cands) if (!ladder.length || c.score > ladder.at(-1).score) ladder.push(c);
-  if (!ladder.length) throw new Error('Das Bild kann nicht gelesen werden.');
+  if (!ladder.length) throw new Error(UNREADABLE);
   return ladder;
+}
+
+// The photo of a card written or edited in the dialog as a data URI
+// (CARD_SIDES, CARD_QUALITIES); each smaller side is drawn from the one before.
+async function cardPhoto(file, signal) {
+  const bmp = await bitmapOf(file);
+  try {
+    let src = bmp;
+    for (const side of CARD_SIDES) {
+      const [w, h] = fit(bmp.width, bmp.height, side);
+      src = shrunk(src, w, h);
+      for (const q of CARD_QUALITIES) {
+        const blob = await new Promise((r) => src.toBlob(r, 'image/jpeg', q));
+        signal?.throwIfAborted();
+        if (blob && blob.size <= codec.LIMITS.photo) return 'data:image/jpeg;base64,' + codec.toBase64(new Uint8Array(await blob.arrayBuffer()));
+      }
+    }
+  } finally {
+    bmp.close();
+  }
+  throw new Error('Das Foto ist zu detailreich für eine Karte.'); // even 240 px at the lowest quality is over LIMITS.photo: pixel noise
 }
 
 // ---- go ---------------------------------------------------------------------

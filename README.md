@@ -86,7 +86,7 @@ embedding shows YouTube's notice with a link to watch it there.
 | Invitation `#i=` | ~120 chars | QR code, any messenger, mail |
 | Contribution, text only | ~250 chars | anywhere |
 | Contribution with photo | whole message ≤ 1 900 bytes | one message in any messenger, Signal included |
-| Admin link `#b=` (whole board) | 3–4 KB for 50 texts, ~1 KB more per photo, offered up to 32 000 chars | second device, backup |
+| Admin link `#b=` (whole board) | 3–4 KB for 50 texts, ~1 KB more per guest photo, offered up to 32 000 chars; a card with a 480 px photo from the dialog (6–30 KB) can exceed that, the dialog then points to the backup | second device, backup |
 | Finished page | file | download, share, print |
 | Online view `#v=` (*Online ansehen*) | the whole board up to 32 000 chars, else all cards without photos, else only the cards with players, else none | the link opens the board in the app |
 
@@ -97,8 +97,12 @@ character inside the photo bytes mostly shows as a changed or broken
 photo. Only version 3 is read (versions 1 and 2 never left testing). Hard
 limits (`codec.js`):
 title 80, name 60, text 1000, sticker 8 code points, image or video link
-500, photo 4 KB, 500 contributions, 2000 remembered deletions, token
-40 000 chars.
+500, photo 32 KB (a guest's is ~1.4 KB; a photo picked in the card dialog,
+for an own card or replacing a guest's, becomes a 480 px JPEG of 6–30 KB
+depending on the photo and the browser), 500 contributions, 2000 remembered
+deletions, token 40 000 chars. The browser's storage holds about 5 million
+characters for all boards together: some 150 dialog photos, against
+thousands of guest photos; when it is full, saving is refused and says so.
 
 ## Scale path
 
