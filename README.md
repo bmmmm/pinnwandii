@@ -97,7 +97,8 @@ character inside the photo bytes mostly shows as a changed or broken
 photo. Only version 3 is read (versions 1 and 2 never left testing). Hard
 limits (`codec.js`):
 title 80, name 60, text 1000, sticker 8 code points, image or video link
-500, photo 32 KB (a guest's is ~1.4 KB; a photo picked in the card dialog,
+500, photo 32 KB in storage, backups and admin links and 4 KB in a
+greeting link (a guest's is ~1.4 KB; a photo picked in the card dialog,
 for an own card or replacing a guest's, becomes a 480 px JPEG of 6–30 KB
 depending on the photo and the browser), 500 contributions, 2000 remembered
 deletions, token 40 000 chars. The browser's storage holds about 5 million

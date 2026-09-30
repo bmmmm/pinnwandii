@@ -46,10 +46,15 @@ test('1 board round-trip keeps umlauts, emoji, newlines and RTL text', async () 
 });
 
 test('2 photo bytes survive the binary tail unchanged', async () => {
-  const bytes = randomBytes(24 * 1024); // a photo a token can still carry (LIMITS.token caps it near 29 KB); one at LIMITS.photo lives in storage and backups
+  const bytes = randomBytes(LIMITS.linkPhoto); // the most a greeting link may carry
   const c = { ...contrib, img: photo(bytes) };
   const back = await decodeContrib(await encodeContrib(c));
   equal(back.img, c.img);
+  // a card photo (LIMITS.photo) travels in board tokens only; LIMITS.token caps it near 29 KB
+  const big = photo(randomBytes(24 * 1024, 2));
+  const b = { ...board, contribs: [{ name: 'A', text: 'a', sticker: '', img: big }] };
+  equal((await decodeBoard(await encodeBoard(b))).contribs[0].img, big);
+  await rejects(decodeContrib(await encodeContrib({ ...contrib, img: photo(randomBytes(LIMITS.linkPhoto + 1, 3)) })), { code: 'invalid' }); // a crafted greeting link over the guest limit
   deepEqual(fromBase64url(toBase64url(bytes)), bytes);
 });
 

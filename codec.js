@@ -30,12 +30,14 @@ import { stripJpeg, unstripJpeg } from './jpeg.js';
 const VERSION = '3';
 const READABLE = ['3'];
 const PRESETS = ['p', 'b', 'd'];
-// photo: a guest's JPEG is ~1.4 KB (MAX_PHOTO in app.js), an organizer's
-// card photo up to this (CARD_SIDES in app.js: 480 px, ~25 KB for a photo);
-// token: the longest link the app offers is 32 000 characters.
+// photo: a card photo from the dialog (CARD_SIDES in app.js: 480 px, 6–30 KB)
+// in storage, backups and admin links; linkPhoto: what a greeting link (#c=)
+// may carry, a guest's JPEG is ~1.4 KB (MAX_PHOTO in app.js), a crafted link
+// gets no more room than that needs; token: the longest link the app offers
+// is 32 000 characters.
 export const LIMITS = Object.freeze({
   title: 80, name: 60, text: 1000, sticker: 8, url: 500,
-  photo: 32 * 1024, contribs: 500, deleted: 2000, token: 40_000,
+  photo: 32 * 1024, linkPhoto: 4 * 1024, contribs: 500, deleted: 2000, token: 40_000,
   json: 512 * 1024,
 });
 
@@ -171,11 +173,11 @@ const dataUriBytes = (b64) =>
 // `wire`: a tuple straight from a token, whose photos are still byte counts
 // into the tail. Everywhere else (storage, backups) a number is invalid: it
 // would pass here and break encoding and rendering later.
-function checkImg(img, wire) {
+function checkImg(img, wire, max = LIMITS.photo) {
   if (img === '') return;
   if (typeof img === 'number') {
     if (!wire) fail('invalid', 'Bild: falscher Typ.');
-    if (Number.isInteger(img) && img > 0 && img <= LIMITS.photo) return;
+    if (Number.isInteger(img) && img > 0 && img <= max) return;
     fail('invalid', 'Foto zu groß.');
   }
   if (typeof img !== 'string') fail('invalid', 'Bild: falscher Typ.');
@@ -184,16 +186,16 @@ function checkImg(img, wire) {
   // JSON is hand-made, and one the tail cannot carry would break every admin
   // link built from the board.
   const m = !wire && DATA_RE.exec(img);
-  if (m && canAtob(m[1]) && dataUriBytes(m[1]) <= LIMITS.photo) return;
+  if (m && canAtob(m[1]) && dataUriBytes(m[1]) <= max) return;
   fail('invalid', `Bild, Video oder GIF: ein https-Link mit höchstens ${LIMITS.url} Zeichen oder ein kleines Foto.`);
 }
-function checkEntry(t, wire = false) {
+function checkEntry(t, wire = false, max = LIMITS.photo) {
   if (!Array.isArray(t) || t.length !== 4) fail('invalid', 'Beitrag: falscher Typ.');
   const [name, text, sticker, img] = t;
   if (!isStr(name, LIMITS.name)) fail('invalid', `Name: 1 bis ${LIMITS.name} Zeichen.`);
   if (!isStr(text, LIMITS.text)) fail('invalid', `Text: 1 bis ${LIMITS.text} Zeichen.`);
   if (typeof sticker !== 'string' || [...sticker].length > LIMITS.sticker) fail('invalid', 'Sticker: zu lang.');
-  checkImg(img, wire);
+  checkImg(img, wire, max);
   return { name, text, sticker, img };
 }
 // A board entry: a contribution plus its origin (left out when it follows
@@ -234,7 +236,7 @@ export function validate(kind, t, { wire = false } = {}) {
   if (kind === 'contrib') {
     if (!Array.isArray(t) || t.length !== 5) fail('invalid', 'Beitrag: falscher Typ.');
     if (typeof t[0] !== 'string' || !ID_RE.test(t[0])) fail('invalid', 'Kennung ungültig.');
-    return { id: t[0], ...checkEntry(t.slice(1), wire) };
+    return { id: t[0], ...checkEntry(t.slice(1), wire, wire ? LIMITS.linkPhoto : LIMITS.photo) }; // on the wire: a greeting link
   }
   throw new Error(`unknown kind: ${kind}`);
 }

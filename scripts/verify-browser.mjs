@@ -764,7 +764,7 @@ try {
   // a photo picked in the dialog keeps 480 px (never sent in a message); pixel noise needs a lower quality to stay within LIMITS.photo
   const CARD_PHOTO = LIMITS.photo;
   const benSrc = () => cp.evaluate(() => [...document.querySelectorAll('#wall .card')].find((c) => c.querySelector('.name').textContent === 'Ben')?.querySelector('img')?.src ?? '');
-  const cardPhotoOf = async (file) => {
+  const cardPhotoOf = async (file, withRef = true) => { // withRef: SSIM against the source, which costs sending it into the page
     await openCard('Ben');
     await cardPhoto.uploadFile(file);
     await waitFor(cp, () => !document.querySelector('#card-note').textContent.startsWith('Foto wird'), null, 30000);
@@ -773,11 +773,11 @@ try {
     await waitFor(cp, () => !document.querySelector('#dlg-card').open || document.querySelector('#toast').textContent.length > 0, null, 30000).catch(() => {});
     if (await cp.evaluate(() => document.querySelector('#dlg-card').open)) await cp.$eval('#dlg-card [data-close]', (b) => b.click()); // refused (a photo over the limit): the wall keeps the old one
     const src = await benSrc();
-    return { src, look: isPhoto(src) ? await inspect(cp, src, `data:image/${file.endsWith('.png') ? 'png' : 'jpeg'};base64,${fs.readFileSync(file).toString('base64')}`) : {} };
+    return { src, look: isPhoto(src) ? await inspect(cp, src, withRef ? `data:image/${file.endsWith('.png') ? 'png' : 'jpeg'};base64,${fs.readFileSync(file).toString('base64')}` : undefined) : {} };
   };
   const own = await cardPhotoOf(images.jpg);
   check('14 own card: the photo is 480 px wide, within 32 KB, and looks like the original', isPhoto(own.src) && own.look.w === 480 && photoBytes(own.src) <= CARD_PHOTO && photoBytes(own.src) > 2048 && own.look.ssim > 0.9, `${own.look.w}×${own.look.h} px, ${isPhoto(own.src) ? photoBytes(own.src) : '-'} B, ssim ${own.look.ssim?.toFixed(3)}`);
-  const noisy = await cardPhotoOf(images.noise);
+  const noisy = await cardPhotoOf(images.noise, false);
   check('14 own card: pixel noise still lands within 32 KB (a lower quality or a smaller side)', isPhoto(noisy.src) && noisy.look.w >= 240 && photoBytes(noisy.src) <= CARD_PHOTO && photoBytes(noisy.src) > photoBytes(own.src), `${noisy.look.w}×${noisy.look.h} px, ${isPhoto(noisy.src) ? photoBytes(noisy.src) : '-'} B`);
   // ... and replaced by a video link
   await openCard('Ben');
