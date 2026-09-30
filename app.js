@@ -645,9 +645,29 @@ $('#card-nomedia').onclick = () => {
   setCardMedia('', '');
   field(cardForm, 'photo').focus(); // the button hides itself; keep the keyboard in the dialog
 };
-field(cardForm, 'photo').addEventListener('change', async (e) => {
+field(cardForm, 'photo').addEventListener('change', (e) => {
   const file = e.target.files[0];
   e.target.value = '';
+  takeCardPhoto(file);
+});
+// A photo can also be pasted (Ctrl+V) or dropped onto the dialog: the first
+// image file of the clipboard or the drop. Text pasted into a field stays a paste.
+const imageFile = (dt) => [...(dt?.files ?? [])].find((f) => f.type.startsWith('image/'));
+document.addEventListener('paste', (e) => {
+  if (!$('#dlg-card').open) return;
+  const file = imageFile(e.clipboardData);
+  if (!file) return;
+  e.preventDefault();
+  takeCardPhoto(file);
+});
+$('#dlg-card').addEventListener('dragover', (e) => { if (imageFile(e.dataTransfer) || [...(e.dataTransfer?.types ?? [])].includes('Files')) e.preventDefault(); });
+$('#dlg-card').addEventListener('drop', (e) => {
+  const file = imageFile(e.dataTransfer);
+  if (!file) return;
+  e.preventDefault();
+  takeCardPhoto(file);
+});
+async function takeCardPhoto(file) {
   if (!file || !card) return;
   const state = card;
   state.abort?.abort();
@@ -665,7 +685,7 @@ field(cardForm, 'photo').addEventListener('change', async (e) => {
   } finally {
     if (state.shrinking === shrinking) state.shrinking = null;
   }
-});
+}
 // The form's submit button, so Enter in a field saves too.
 cardForm.addEventListener('submit', async (e) => {
   e.preventDefault();

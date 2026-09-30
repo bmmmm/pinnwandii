@@ -789,6 +789,24 @@ try {
   check('14 admin link with a dialog photo: offered, the photo travels at a guest\'s size', bigAdmin[0].length > 0 && bigAdmin[0].length < 32000 && isPhoto(linkBen) && photoBytes(linkBen) <= 2048 && photoBytes(noisy.src) > 20000, `${bigAdmin[0].length} chars, Ben ${isPhoto(linkBen) ? photoBytes(linkBen) : '-'} B in the link vs ${photoBytes(noisy.src)} B on the wall; note "${bigAdmin[1]}"`);
   if (bigAdmin[0]) await cp.$eval('#dlg-share [data-close]', (b) => b.click());
   await cp.$eval('#dlg-settings [data-close]', (b) => b.click());
+  // a photo pasted (Ctrl+V) or dropped onto the dialog goes the same way as a chosen one
+  const pasteOrDrop = async (how) => {
+    await openCard('Ben');
+    await cp.evaluate(() => { document.querySelector('#card-media').replaceChildren(); document.querySelector('#card-note').textContent = ''; });
+    await cp.evaluate(([how, b64]) => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], 'scene.jpg', { type: 'image/jpeg' }));
+      if (how === 'paste') document.querySelector('#card-form input[name=name]').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      else document.querySelector('#dlg-card').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    }, [how, fs.readFileSync(images.jpg).toString('base64')]);
+    await waitFor(cp, () => document.querySelector('#card-media img')?.naturalWidth > 0, null, 30000).catch(() => {});
+    const r = await cp.evaluate(() => [document.querySelector('#card-media img')?.naturalWidth ?? 0, document.querySelector('#card-note').textContent]);
+    await cp.$eval('#dlg-card [data-close]', (b) => b.click());
+    return r;
+  };
+  const pasted = await pasteOrDrop('paste');
+  const dropped = await pasteOrDrop('drop');
+  check('14 card dialog: a pasted or dropped photo is taken like a chosen one', pasted[0] === 480 && dropped[0] === 480, `paste ${pasted[0]} px "${pasted[1]}", drop ${dropped[0]} px "${dropped[1]}"`);
   // ... and replaced by a video link
   await openCard('Ben');
   const hadPhoto = await cp.evaluate(() => !!document.querySelector('#card-media img[src^="data:image/jpeg"]'));
