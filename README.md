@@ -126,6 +126,7 @@ thousands of guest photos; when it is full, saving is refused and says so.
 | `app.js` | Router, views, storage, photo pipeline, static page builder |
 | `test.mjs` | `node --test` suite for codec and photos |
 | `scripts/verify-browser.mjs` | End-to-end check in headless Chromium |
+| `scripts/verify-engines.mjs` | The photo paths in Firefox and WebKit (downscale sharpness, card sizes, EXIF) |
 | `.github/workflows/pages.yml` | Deploys the app files (and `boards/`) to GitHub Pages |
 
 ## Development
@@ -145,6 +146,16 @@ check needs `puppeteer-core` and a Chromium outside the repository
 npm i --prefix ~/.cache/pinnwandii-verify puppeteer-core
 PUPPETEER_DIR=~/.cache/pinnwandii-verify node scripts/verify-browser.mjs
 ORIGIN=https://bmmmm.github.io/pinnwandii PUPPETEER_DIR=… node scripts/verify-browser.mjs
+```
+
+Photos differ per engine (Firefox aliases a one-step canvas downscale,
+WebKit's JPEG encoder writes bigger files), so the photo paths also run in
+Playwright's Firefox and WebKit:
+
+```sh
+npm i --prefix ~/.cache/pinnwandii-verify playwright
+PLAYWRIGHT_BROWSERS_PATH=~/.cache/pinnwandii-verify/browsers npx --prefix ~/.cache/pinnwandii-verify playwright install firefox webkit
+PLAYWRIGHT_DIR=~/.cache/pinnwandii-verify PLAYWRIGHT_BROWSERS_PATH=~/.cache/pinnwandii-verify/browsers node scripts/verify-engines.mjs
 ```
 
 ## License
