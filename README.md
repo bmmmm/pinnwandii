@@ -86,9 +86,9 @@ embedding shows YouTube's notice with a link to watch it there.
 | Invitation `#i=` | ~120 chars | QR code, any messenger, mail |
 | Contribution, text only | ~250 chars | anywhere |
 | Contribution with photo | whole message ≤ 1 900 bytes | one message in any messenger, Signal included |
-| Admin link `#b=` (whole board) | 3–4 KB for 50 texts, ~1 KB more per guest photo, offered up to 32 000 chars; a card with a 480 px photo from the dialog (6–30 KB) can exceed that, the dialog then points to the backup | second device, backup |
+| Admin link `#b=` (whole board) | 3–4 KB for 50 texts, ~1 KB more per photo, offered up to 32 000 chars; a 480 px photo from the dialog travels at a guest's size (the backup and the finished page keep it in full), so the link stays under the cap as before | second device, backup |
 | Finished page | file | download, share, print |
-| Online view `#v=` (*Online ansehen*) | the whole board up to 32 000 chars, else all cards without photos, else only the cards with players, else none | the link opens the board in the app |
+| Online view `#v=` (*Online ansehen*) | the whole board up to 32 000 chars (dialog photos at a guest's size), else all cards without photos, else only the cards with players, else none | the link opens the board in the app |
 
 Tokens are `3.<base64url>` of `u32 len | zlib(JSON) | photo bytes…`. A
 link cut off while copying is caught by the lengths and the zlib checksum

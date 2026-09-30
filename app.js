@@ -3,7 +3,7 @@
 // sharing, merge dialog and the static page builder. All user content is
 // rendered through textContent / createElement, never through innerHTML.
 import * as codec from './codec.js';
-import { encodeJpeg, ssim, strippedLength } from './jpeg.js';
+import { encodeJpeg, ssim, stripJpeg, strippedLength } from './jpeg.js';
 import { FRAME_SRC, PLAYER_JS, hasPlayable, mediaOf, parseMediaLink, playInline, scriptHash, viewToken } from './media.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -446,7 +446,23 @@ function renderBoard(board, newFrom = Infinity) {
   $('#meta').textContent = plural(board.contribs.length);
   if (newFrom < Infinity) setTimeout(() => cards.forEach((c) => c.classList.remove('new')), 2000);
 }
-const adminLink = async (board) => `${BASE}#b=${await codec.encodeBoard(board)}`;
+// A photo from the card dialog (6–30 KB) does not fit a link: for the admin
+// link and the online view it is shrunk to a guest's size through the ladder
+// (cached per photo for the session); storage, backup and the finished page
+// keep it. A photo the ladder cannot read stays as it is.
+const linkPhotos = new Map();
+function linkPhoto(img) {
+  if (!img.startsWith('data:')) return img;
+  const bytes = codec.fromBase64(img.slice(img.indexOf(',') + 1));
+  const own = stripJpeg(bytes);
+  if (own && own.length <= MAX_PHOTO) return img; // a guest's photo already
+  if (!linkPhotos.has(img)) linkPhotos.set(img, photoLadder(new Blob([bytes], { type: 'image/jpeg' })).then((l) => l.at(-1).img, () => img));
+  return linkPhotos.get(img);
+}
+async function forLink(board) {
+  return { ...board, contribs: await Promise.all(board.contribs.map(async (c) => ({ ...c, img: await linkPhoto(c.img) }))) };
+}
+const adminLink = async (board) => `${BASE}#b=${await codec.encodeBoard(await forLink(board))}`;
 
 function showReceive(c, hint) {
   current = null;
@@ -826,7 +842,7 @@ function buildStaticPage(board, css, { script = '', hash = '' } = {}) {
   return `<!doctype html>\n${doc.documentElement.outerHTML}`;
 }
 async function onlineView(board) {
-  const view = await viewToken(board, LINK_CAP - `${BASE}#v=`.length);
+  const view = await viewToken(await forLink(board), LINK_CAP - `${BASE}#v=`.length);
   return view && { href: `${BASE}#v=${view.token}`, scope: view.scope };
 }
 // The finished page as a file, or null (with a toast) if the stylesheet

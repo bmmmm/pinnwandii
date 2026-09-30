@@ -207,7 +207,7 @@ try {
   await page.click('#new-form input[value=b]');
   await setValue(page, '#new-form input[name=hue]', '300');
   await page.click('#new-form button.primary');
-  await waitFor(page, () => /^#o=[A-Za-z0-9_-]{6}$/.test(location.hash));
+  await waitFor(page, () => /^#o=[A-Za-z0-9_-]{6}$/.test(location.hash) && !document.querySelector('#view-board').hidden); // route() runs on hashchange, a task after the hash changed
   const boardId = await page.evaluate(() => location.hash.slice(3));
   check('1 board created, #o= route', await visible(page, '#view-board') && await visible(page, '#toolbar'), `id ${boardId}`);
   check('1 empty wall hint', await visible(page, '#empty') && (await cardCount(page)) === 0);
@@ -779,6 +779,16 @@ try {
   check('14 own card: the photo is 480 px wide, within 32 KB, and looks like the original', isPhoto(own.src) && own.look.w === 480 && photoBytes(own.src) <= CARD_PHOTO && photoBytes(own.src) > 2048 && own.look.ssim > 0.9, `${own.look.w}×${own.look.h} px, ${isPhoto(own.src) ? photoBytes(own.src) : '-'} B, ssim ${own.look.ssim?.toFixed(3)}`);
   const noisy = await cardPhotoOf(images.noise, false);
   check('14 own card: pixel noise still lands within 32 KB (a lower quality or a smaller side)', isPhoto(noisy.src) && noisy.look.w >= 240 && photoBytes(noisy.src) <= CARD_PHOTO && photoBytes(noisy.src) > photoBytes(own.src), `${noisy.look.w}×${noisy.look.h} px, ${isPhoto(noisy.src) ? photoBytes(noisy.src) : '-'} B`);
+  // the 30 KB dialog photo travels in the admin link at a guest's size: the link stays under the cap, the wall keeps the big one
+  await cp.click('#toolbar [data-act=settings]');
+  await waitFor(cp, () => document.querySelector('#dlg-settings').open);
+  await cp.click('#admin-link');
+  await waitFor(cp, () => document.querySelector('#dlg-share').open || document.querySelector('#admin-note').textContent.length > 0, null, 30000).catch(() => {});
+  const bigAdmin = await cp.evaluate(() => [document.querySelector('#dlg-share').open ? document.querySelector('#share-text').value : '', document.querySelector('#admin-note').textContent]);
+  const linkBen = bigAdmin[0] ? (await decodeBoard(bigAdmin[0].split('#b=')[1])).contribs.find((c) => c.name === 'Ben')?.img ?? '' : '';
+  check('14 admin link with a dialog photo: offered, the photo travels at a guest\'s size', bigAdmin[0].length > 0 && bigAdmin[0].length < 32000 && isPhoto(linkBen) && photoBytes(linkBen) <= 2048 && photoBytes(noisy.src) > 20000, `${bigAdmin[0].length} chars, Ben ${isPhoto(linkBen) ? photoBytes(linkBen) : '-'} B in the link vs ${photoBytes(noisy.src)} B on the wall; note "${bigAdmin[1]}"`);
+  if (bigAdmin[0]) await cp.$eval('#dlg-share [data-close]', (b) => b.click());
+  await cp.$eval('#dlg-settings [data-close]', (b) => b.click());
   // ... and replaced by a video link
   await openCard('Ben');
   const hadPhoto = await cp.evaluate(() => !!document.querySelector('#card-media img[src^="data:image/jpeg"]'));
