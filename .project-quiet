@@ -1,0 +1,4 @@
+# Quiet: fleet automations skip this repo. Undo: ~/ops/scripts/fleet-quiet.sh resume pinnwandii
+since: 2026-11-24
+reason: no development planned
+disabled-workflows: dependabot-automerge.yml pages.yml
